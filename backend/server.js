@@ -1,3 +1,4 @@
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -5,7 +6,6 @@ const dotenv = require("dotenv");
 
 dotenv.config({ path: path.join(__dirname, ".env") });
 
-const path = require("path");
 const { env } = require("./config/env");
 const { connectDB } = require("./config/db");
 const apiRoutes = require("./routes");
