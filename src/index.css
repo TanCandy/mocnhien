@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  --font-headline: "Be Vietnam Pro", serif;
+  --font-body: "Be Vietnam Pro", sans-serif;
+  --font-label: "Be Vietnam Pro", sans-serif;
+
+  --color-primary: #795741;
+  --color-primary-container: #bc937a;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #492d1a;
+
+  --color-secondary: #715a4b;
+  --color-secondary-container: #fcdcc9;
+  --color-on-secondary: #ffffff;
+  --color-on-secondary-container: #776051;
+
+  --color-background: #fcf9f6;
+  --color-surface: #fcf9f6;
+  --color-surface-container: #f0edea;
+  --color-surface-container-low: #f6f3f0;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-high: #eae8e5;
+  --color-surface-container-highest: #e5e2df;
+
+  --color-on-surface: #1b1c1a;
+  --color-on-surface-variant: #50443e;
+  --color-outline: #82746d;
+  --color-outline-variant: #d4c3bb;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-on-surface font-body;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-headline;
+  }
+}
+
+@layer utilities {
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .animate-fade-in-up {
+    animation: fadeInUp 0.6s ease-out forwards;
+  }
+  .animate-fade-in {
+    animation: fadeIn 0.2s ease-out forwards;
+  }
+}
