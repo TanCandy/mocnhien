@@ -13,8 +13,18 @@ const TOKEN_KEY = "auth_token";
 const USER_KEY = "auth_user";
 
 export function getApiBaseUrl() {
-  // Vite exposes env vars prefixed with VITE_ via import.meta.env
-  const url = (import.meta as any).env?.VITE_API_URL || "http://localhost:4000";
+  // In production (same origin), use relative URL
+  // In development, use VITE_API_URL or localhost
+  const env = (import.meta as any).env;
+  const isProduction = env?.MODE === "production" || !env?.DEV;
+
+  if (isProduction) {
+    // Use relative URL - same origin as the frontend
+    return "";
+  }
+
+  // Development mode
+  const url = env?.VITE_API_URL || "http://localhost:4000";
   console.log("[Auth] API Base URL:", url);
   return url;
 }

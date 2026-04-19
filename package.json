@@ -1,14 +1,16 @@
 {
-  "name": "react-example",
+  "name": "moc-nhien-authentic",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "start": "node backend/server.js",
+    "dev:backend": "cd backend && node server.js",
+    "install:all": "npm install && cd backend && npm install"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

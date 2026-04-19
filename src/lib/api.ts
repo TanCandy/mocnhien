@@ -6,7 +6,8 @@ async function request(path: string, init: RequestInit = {}) {
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const url = `${getApiBaseUrl()}${path}`;
+  const baseUrl = getApiBaseUrl();
+  const url = baseUrl ? `${baseUrl}${path}` : path;
   console.log(`[API] ${init.method || "GET"} ${url}`);
 
   let res: Response;

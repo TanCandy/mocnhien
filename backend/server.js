@@ -4,7 +4,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const dotenv = require("dotenv");
 
-// Load .env file - works in both development and production
+// Load .env file from backend folder
 dotenv.config({
   path: path.join(__dirname, ".env"),
 });
@@ -44,7 +44,7 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", message: "Backend is running", environment: env.NODE_ENV });
 });
 
-// Health check endpoint (important for Render)
+// Health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
 });
@@ -57,37 +57,38 @@ app.get("/health", (req, res) => {
 app.use("/api", apiRoutes);
 
 // ============================================
-// STATIC FILES & SPA FALLBACK (MUST be last)
+// STATIC FILES & SPA FALLBACK
 // ============================================
+
+// Path to frontend dist folder (root of project)
+const distPath = path.join(__dirname, "../dist");
 
 // Serve static frontend build files
-app.use(express.static(path.join(__dirname, "../dist")));
+app.use(express.static(distPath));
 
 // Catch-all route for SPA - MUST be the LAST route
-// Use regex pattern instead of "*" to avoid path-to-regexp issues
-app.use((req, res, next) => {
-  // Only handle GET requests that haven't been matched
-  if (req.method === "GET" && !req.path.startsWith("/api")) {
-    res.sendFile(path.join(__dirname, "../dist/index.html"), (err) => {
-      if (err) {
-        // If no index.html exists, send a simple response
-        res.status(200).send("Mộc Nhiên Authentic - Backend Running");
-      }
-    });
-  } else {
-    // For API routes that weren't found, let it fall through to 404
-    next();
-  }
+// Use /* instead of * to avoid path-to-regexp crash
+app.get("/*", (req, res) => {
+  res.sendFile(path.join(distPath, "index.html"), (err) => {
+    if (err) {
+      // Fallback if index.html doesn't exist
+      res.status(200).send(`
+        <html>
+          <head><title>Mộc Nhiên Authentic</title></head>
+          <body>
+            <h1>Mộc Nhiên Authentic</h1>
+            <p>Backend is running. Frontend not built yet.</p>
+            <p>Run: npm run build</p>
+          </body>
+        </html>
+      `);
+    }
+  });
 });
 
 // ============================================
-// ERROR HANDLERS (MUST be at the end)
+// ERROR HANDLERS (at the very end)
 // ============================================
-
-// 404 handler - only for unmatched API routes
-app.use("/api", (req, res) => {
-  res.status(404).json({ message: "API endpoint not found", path: req.path });
-});
 
 // Central error handler
 app.use(errorHandler);
