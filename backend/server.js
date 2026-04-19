@@ -16,8 +16,11 @@ const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
 
-// ✅ CORS — allow frontend calls from any origin in development
-// In production, Render sets FRONTEND_URL environment variable
+// ============================================
+// MIDDLEWARE (order matters!)
+// ============================================
+
+// CORS — allow frontend calls
 const corsOptions = {
   origin: process.env.FRONTEND_URL || process.env.NODE_ENV === "production"
     ? false  // In production, only same-origin
@@ -26,9 +29,15 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// ✅ Must come BEFORE routes so cookies are parsed on every request
+// Cookie parser (must be before routes)
 app.use(cookieParser());
+
+// JSON body parser
 app.use(express.json({ limit: "1mb" }));
+
+// ============================================
+// HEALTH CHECK ROUTES (before API routes)
+// ============================================
 
 // Root route — simple health check
 app.get("/", (req, res) => {
@@ -40,27 +49,52 @@ app.get("/health", (req, res) => {
   res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
 });
 
+// ============================================
+// API ROUTES
+// ============================================
+
 // Mount all API routes under /api/*
 app.use("/api", apiRoutes);
 
+// ============================================
+// STATIC FILES & SPA FALLBACK (MUST be last)
+// ============================================
 
-
-// serve static frontend build
+// Serve static frontend build files
 app.use(express.static(path.join(__dirname, "../dist")));
 
-// fallback to index.html for SPA routing
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../dist/index.html"));
+// Catch-all route for SPA - MUST be the LAST route
+// Use regex pattern instead of "*" to avoid path-to-regexp issues
+app.use((req, res, next) => {
+  // Only handle GET requests that haven't been matched
+  if (req.method === "GET" && !req.path.startsWith("/api")) {
+    res.sendFile(path.join(__dirname, "../dist/index.html"), (err) => {
+      if (err) {
+        // If no index.html exists, send a simple response
+        res.status(200).send("Mộc Nhiên Authentic - Backend Running");
+      }
+    });
+  } else {
+    // For API routes that weren't found, let it fall through to 404
+    next();
+  }
 });
 
+// ============================================
+// ERROR HANDLERS (MUST be at the end)
+// ============================================
 
-// 404 — unmatched routes
-app.use((req, res) => {
-  res.status(404).json({ message: "Not Found", path: req.path });
+// 404 handler - only for unmatched API routes
+app.use("/api", (req, res) => {
+  res.status(404).json({ message: "API endpoint not found", path: req.path });
 });
 
 // Central error handler
 app.use(errorHandler);
+
+// ============================================
+// SERVER STARTUP
+// ============================================
 
 async function start() {
   // Validate required environment variables
@@ -72,7 +106,6 @@ async function start() {
   }
 
   // Render provides PORT environment variable
-  // Fall back to env.PORT (from .env) for local development
   const PORT = process.env.PORT || env.PORT || 4000;
 
   console.log("🔌 Connecting to MongoDB...");
@@ -80,8 +113,9 @@ async function start() {
   console.log("✅ MongoDB connected");
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 API server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
     console.log(`   Health check: http://localhost:${PORT}/health`);
+    console.log(`   Environment: ${env.NODE_ENV}`);
   });
 }
 
@@ -104,5 +138,3 @@ start().catch((err) => {
   console.error(err.stack);
   process.exit(1);
 });
-
-
