@@ -39,7 +39,7 @@ app.get("/health", (req, res) => {
 app.use("/api", apiRoutes);
 
 
-const path = require("path");
+
 
 // serve static frontend
 app.use(express.static(path.join(__dirname, "../dist")));
