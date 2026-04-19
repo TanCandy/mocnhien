@@ -38,6 +38,18 @@ app.get("/health", (req, res) => {
 // Mount all API routes under /api/*
 app.use("/api", apiRoutes);
 
+
+const path = require("path");
+
+// serve static frontend
+app.use(express.static(path.join(__dirname, "../dist")));
+
+// fallback về index.html
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../dist/index.html"));
+});
+
+
 // 404 — unmatched routes
 app.use((req, res) => {
   res.status(404).json({ message: "Not Found", path: req.path });
