@@ -37,16 +37,9 @@ export default function OrderDetail() {
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-outline">
               <MapPin className="w-4 h-4" />
-              <span className="text-xs font-bold uppercase tracking-widest">Origin</span>
+              <span className="text-xs font-bold uppercase tracking-widest">Warehouse Address</span>
             </div>
-            <p className="font-headline font-bold text-primary text-lg">{order.origin}</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-outline">
-              <MapPin className="w-4 h-4" />
-              <span className="text-xs font-bold uppercase tracking-widest">Destination</span>
-            </div>
-            <p className="font-headline font-bold text-primary text-lg">{order.destination}</p>
+            <p className="font-headline font-bold text-primary text-lg">{order.origin} → {order.destination}</p>
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-outline">
@@ -114,6 +107,10 @@ export default function OrderDetail() {
                   <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">Contents</p>
                   <p className="text-on-surface font-medium">{order.category} Items</p>
                 </div>
+              </div>
+              <div>
+                <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">Nhân viên</p>
+                <p className="text-on-surface font-medium">N/A</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

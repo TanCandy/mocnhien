@@ -8,6 +8,7 @@ async function request(path: string, init: RequestInit = {}) {
 
   const baseUrl = getApiBaseUrl();
   const url = baseUrl ? `${baseUrl}${path}` : path;
+  
   console.log(`[API] ${init.method || "GET"} ${url}`);
 
   let res: Response;
@@ -18,16 +19,16 @@ async function request(path: string, init: RequestInit = {}) {
       credentials: "include",
     });
   } catch (networkErr) {
-    // This is the "Failed to fetch" source — backend is unreachable
-    console.error("[API] Network error:", networkErr);
-    throw new Error("Backend is not running. Please start server.");
+    console.error("[API] Failed to connect to backend at:", url);
+    console.error("[API] Make sure backend is running: cd backend && npm run dev");
+    console.error("[API] Error:", networkErr);
+    throw new Error("Cannot connect to backend. Please start the backend server.");
   }
 
   let data: any = {};
   try {
     data = await res.json();
   } catch {
-    // Response had no JSON body — still surface the status
     data = {};
   }
 
@@ -50,4 +51,3 @@ export const api = {
     request(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   delete: (path: string) => request(path, { method: "DELETE" }),
 };
-

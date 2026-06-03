@@ -9,7 +9,6 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.VITE_API_URL': JSON.stringify(env.VITE_API_URL || 'http://localhost:4000'),
     },
     resolve: {
       alias: {
@@ -21,7 +20,14 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
     },
     server: {
-      hmr: process.env.DISABLE_HMR !== 'true',
+      port: 3000,
+      proxy: {
+        '/api': {
+          target: 'http://localhost:4000',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
     },
   };
 });

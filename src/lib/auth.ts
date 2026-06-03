@@ -12,21 +12,9 @@ export interface SessionUser {
 const TOKEN_KEY = "auth_token";
 const USER_KEY = "auth_user";
 
+// Empty string = use relative URL, Vite proxy handles routing
 export function getApiBaseUrl() {
-  // In production (same origin), use relative URL
-  // In development, use VITE_API_URL or localhost
-  const env = (import.meta as any).env;
-  const isProduction = env?.MODE === "production" || !env?.DEV;
-
-  if (isProduction) {
-    // Use relative URL - same origin as the frontend
-    return "";
-  }
-
-  // Development mode
-  const url = env?.VITE_API_URL || "http://localhost:4000";
-  console.log("[Auth] API Base URL:", url);
-  return url;
+  return "";
 }
 
 export function setToken(token: string) {
@@ -80,4 +68,3 @@ export function getRoleFromToken(token: string | null): UserRole | null {
   const payload = parseJwtPayload(token);
   return payload?.role === "admin" ? "admin" : payload?.role === "user" ? "user" : null;
 }
-

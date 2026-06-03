@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { CheckCircle2, Search, ArrowRight, Loader2, AlertTriangle, ExternalLink, LogIn } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { formatVND, formatUSD, ensureUrlProtocol } from "../lib/formatters";
+import { getWarehouseAddress, computeOrderVND, resolveContactDisplay } from "../lib/orderUtils";
 import { useUser } from "../context/UserContext";
 
 interface TimelineEvent {
@@ -15,19 +16,24 @@ interface TimelineEvent {
 
 interface Order {
   id: string;
+  orderCode: string;
   trackingId: string;
   status: string;
   date: string;
-  origin: string;
-  destination: string;
+  warehouseAddress?: string;
+  staffName?: string;
+  origin?: string;
+  destination?: string;
   weight: string;
   price: string;
   customerName?: string;
-  customerEmail?: string;
+  contactType?: string;
+  contactValue?: string;
   productLink?: string;
   uspsTracking?: string;
   priceUSD?: number;
   priceVND?: number;
+  exchangeRate?: number;
   priceVNDFormatted?: string;
   timeline: TimelineEvent[];
 }
@@ -49,20 +55,68 @@ const StatusBadge = ({ status }: { status: string }) => {
 export default function Tracking() {
   const { user } = useUser();
   const navigate = useNavigate();
-  const [searchId, setSearchId] = useState("");
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<Order[]>([]);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [foundOrder, setFoundOrder] = useState<Order | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  async function handleTrack() {
-    if (!searchId.trim()) {
-      setError("Please enter a tracking code.");
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setSuggestions([]);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleSearch = async (value: string) => {
+    setQuery(value);
+    setSelectedOrder(null);
+    setFoundOrder(null);
+    setError("");
+
+    if (!value.trim()) {
+      setSuggestions([]);
       return;
     }
 
-    // Check if user is logged in
-    if (!user) {
-      setError("Please log in to track your order.");
+    // If user typed a full order code (starts with MN-), skip suggestions and go straight to track
+    if (value.startsWith("MN-")) {
+      setSuggestions([]);
+      return;
+    }
+
+    // Debounce search API call
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const data = await api.get(`/api/orders/search?q=${encodeURIComponent(value.trim())}`);
+        setSuggestions(data || []);
+      } catch (err) {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+  };
+
+  const selectOrder = (order: Order) => {
+    setSelectedOrder(order);
+    setQuery(order.customerName);
+    setSuggestions([]);
+  };
+
+  const handleTrack = async () => {
+    if (!selectedOrder) {
+      setError("Please select an order from the suggestions.");
       return;
     }
 
@@ -71,7 +125,8 @@ export default function Tracking() {
     setFoundOrder(null);
 
     try {
-      const data = await api.get(`/api/orders/track?code=${encodeURIComponent(searchId.trim())}`);
+      // Use the existing track API with the orderCode
+      const data = await api.get(`/api/orders/track?code=${encodeURIComponent(selectedOrder.orderCode)}`);
       if (data.order) {
         setFoundOrder(data.order);
         setError("");
@@ -81,7 +136,6 @@ export default function Tracking() {
       }
     } catch (err: any) {
       setFoundOrder(null);
-      // Handle specific error codes
       if (err.status === 401) {
         setError("Session expired. Please log in again.");
       } else if (err.message && err.message.includes("does not belong")) {
@@ -92,24 +146,26 @@ export default function Tracking() {
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   return (
     <div className="px-6 pt-12 space-y-10 max-w-4xl mx-auto pb-24">
       <section className="space-y-6">
         <div className="space-y-2">
           <h2 className="font-headline text-3xl font-bold text-primary leading-tight">Follow Your Legacy</h2>
-          <p className="text-on-surface-variant font-body text-sm leading-relaxed max-w-[80%]">Enter your reference number to view the journey of your curated parcel.</p>
+          <p className="text-on-surface-variant font-body text-sm leading-relaxed max-w-[80%]">
+            Search by order code or customer name to view the journey of your curated parcel.
+          </p>
         </div>
         <div className="relative group">
           <div className="absolute inset-0 bg-primary/5 blur-2xl rounded-full opacity-50 group-focus-within:opacity-100 transition-opacity"></div>
           <div className="relative flex items-center bg-surface-container-lowest rounded-full p-2 shadow-[0_20px_40px_rgba(93,74,65,0.06)] border border-outline-variant/10">
             <input
               className="w-full bg-transparent border-none focus:ring-0 px-6 py-3 font-headline text-lg tracking-widest text-primary placeholder:text-outline-variant/60"
-              placeholder="e.g. MN-123456-ABCD"
+              placeholder="Enter order code or customer name"
               type="text"
-              value={searchId}
-              onChange={(e) => setSearchId(e.target.value)}
+              value={query}
+              onChange={(e) => handleSearch(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleTrack()}
             />
             <button
@@ -124,6 +180,37 @@ export default function Tracking() {
               )}
             </button>
           </div>
+
+          {/* Suggestion dropdown */}
+          {suggestions.length > 0 && (
+            <div
+              ref={dropdownRef}
+              className="absolute z-50 w-full mt-2 bg-white rounded-2xl shadow-xl border border-outline-variant/10 overflow-hidden"
+            >
+              {searching ? (
+                <div className="px-6 py-4 text-sm text-on-surface-variant flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Searching...
+                </div>
+              ) : (
+                suggestions.map((order) => (
+                  <div
+                    key={order.id}
+                    onClick={() => selectOrder(order)}
+                    className="px-6 py-3 cursor-pointer hover:bg-primary/5 transition-colors flex items-center justify-between"
+                  >
+                    <span className="font-medium text-sm text-primary">
+                      {order.customerName || "Unknown"}
+                    </span>
+                    <span className="text-xs text-on-surface-variant font-mono">
+                      {order.orderCode}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
           {error && (
             <div className="mt-4">
               <div className={`flex items-start gap-3 p-4 rounded-2xl ${
@@ -189,7 +276,10 @@ export default function Tracking() {
             <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10">
               <p className="text-[10px] font-bold uppercase tracking-widest text-outline mb-1">Price (VND)</p>
               <p className="font-headline text-2xl text-primary">
-                {foundOrder.priceVND ? formatVND(foundOrder.priceVND) : "-"}
+                {(() => {
+                  const vnd = computeOrderVND(foundOrder.priceUSD, foundOrder.exchangeRate, foundOrder.priceVND);
+                  return vnd > 0 ? formatVND(vnd) : "-";
+                })()}
               </p>
             </div>
           </div>
@@ -225,20 +315,23 @@ export default function Tracking() {
             <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10">
               <p className="text-[10px] font-bold uppercase tracking-widest text-outline mb-1">Customer</p>
               <p className="font-bold text-primary">{foundOrder.customerName}</p>
-              <p className="text-sm text-on-surface-variant">{foundOrder.customerEmail}</p>
+              <p className="text-sm text-on-surface-variant">
+                {resolveContactDisplay(
+                  foundOrder.contactType,
+                  foundOrder.contactValue
+                )}
+              </p>
             </div>
           )}
 
-          {/* Origin and Destination */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-outline mb-1">Origin</p>
-              <p className="font-bold text-primary">{foundOrder.origin || "N/A"}</p>
-            </div>
-            <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-outline mb-1">Destination</p>
-              <p className="font-bold text-primary">{foundOrder.destination || "N/A"}</p>
-            </div>
+          {/* Warehouse Address */}
+          <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-outline mb-1">Warehouse</p>
+            <p className="font-bold text-primary">{getWarehouseAddress(foundOrder) || "N/A"}</p>
+          </div>
+          <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-outline mb-1">Nhân viên</p>
+            <p className="font-bold text-primary">{foundOrder.staffName || "N/A"}</p>
           </div>
 
           {/* Timeline */}
@@ -293,7 +386,7 @@ export default function Tracking() {
           <div className="space-y-2">
             <h3 className="font-headline text-2xl text-primary">Track Your Shipment</h3>
             <p className="text-on-surface-variant max-w-xs mx-auto">
-              Enter your tracking number above to see the real-time status of your shipment.
+              Enter your order code or customer name above to see the real-time status of your shipment.
             </p>
           </div>
         </section>

@@ -2,9 +2,11 @@ import { Truck, Wallet, PlusCircle, Search, Receipt, Lightbulb, Headset, ArrowRi
 import { Link, useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
 import { api } from "../lib/api";
-import { useEffect, useState, FormEvent } from "react";
+import { useEffect, useState, FormEvent, Fragment } from "react";
 import { SuccessModal } from "../components/Toast";
 import { formatCurrencyInput, parseUSD, ensureUrlProtocol } from "../lib/formatters";
+import { calculateVND, isValidExchangeRate, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
+import { computeOrderVND } from "../lib/orderUtils";
 import PaymentQR from "../components/PaymentQR";
 
 type OrderStatus = "pending" | "approved" | "shipping" | "delivered";
@@ -16,36 +18,42 @@ interface Order {
   status: OrderStatus;
   paymentStatus?: string;
   date: string;
-  origin: string;
-  destination: string;
-  addressFrom: string;
-  addressTo: string;
+  warehouseAddress?: string;
+  staffName?: string;
   weight: string;
   price: string;
   category: string;
   createdAt: string;
   priceUSD?: number;
   priceVND?: number;
+  exchangeRate?: number;
   productType?: string;
   productName?: string;
   customerName?: string;
-  customerEmail?: string;
+  contactType?: string;
+  contactValue?: string;
 }
 
 interface OrderFormData {
   productType: string;
   productName: string;
   productLink: string;
-  addressFrom: string;
-  addressTo: string;
+  warehouseAddress: string;
+  staffName: string;
+  priceUSD: string;
+  exchangeRate: string;
+  paidAmount: number;
 }
 
 const initialFormData: OrderFormData = {
   productType: "",
   productName: "",
   productLink: "",
-  addressFrom: "",
-  addressTo: "",
+  warehouseAddress: "",
+  staffName: "",
+  priceUSD: "",
+  exchangeRate: "",
+  paidAmount: 0,
 };
 
 const StatusBadge = ({ status }: { status: OrderStatus }) => {
@@ -92,10 +100,10 @@ export default function Dashboard() {
   }, []);
 
   const activeShipments = orders.filter(o => o.status === "shipping" || o.status === "pending" || o.status === "approved").length;
-  const totalSpentUSD = orders.reduce((sum, o) => {
-    if (o.priceUSD) return sum + o.priceUSD;
-    return sum;
-  }, 0);
+  const totalSpentVND = orders.reduce(
+    (sum, o) => sum + computeOrderVND(o.priceUSD, o.exchangeRate, o.priceVND),
+    0
+  );
 
   function openCreateModal() {
     setFormData(initialFormData);
@@ -115,12 +123,36 @@ export default function Dashboard() {
     setFormLoading(true);
 
     try {
+      // Validate exchange rate
+      const exchangeRateValue = parseExchangeRate(formData.exchangeRate);
+      if (!isValidExchangeRate(exchangeRateValue)) {
+        setFormError("Please enter a valid exchange rate (must be greater than 0)");
+        setFormLoading(false);
+        return;
+      }
+
+      if (!formData.warehouseAddress.trim()) {
+        setFormError("Warehouse address is required");
+        setFormLoading(false);
+        return;
+      }
+      if (!formData.staffName.trim()) {
+        setFormError("Nhân viên nhập đơn is required");
+        setFormLoading(false);
+        return;
+      }
+
+      console.log("CREATE ORDER DATA:", formData);
+
       const payload = {
         productType: formData.productType,
         productName: formData.productName,
         productLink: formData.productLink || undefined,
-        addressFrom: formData.addressFrom,
-        addressTo: formData.addressTo,
+        warehouseAddress: formData.warehouseAddress.trim(),
+        staffName: formData.staffName.trim(),
+        priceUSD: formData.priceUSD || undefined,
+        exchangeRate: exchangeRateValue,
+        paidAmount: formData.paidAmount || 0,
       };
 
       await api.post("/api/orders", payload);
@@ -177,14 +209,11 @@ export default function Dashboard() {
             {loading ? (
               <Loader2 className="w-10 h-10 animate-spin" />
             ) : (
-              (() => {
-                const vndAmount = totalSpentUSD * 24000;
-                return new Intl.NumberFormat('vi-VN', {
-                  style: 'currency',
-                  currency: 'VND',
-                  maximumFractionDigits: 0
-                }).format(vndAmount);
-              })()
+              new Intl.NumberFormat("vi-VN", {
+                style: "currency",
+                currency: "VND",
+                maximumFractionDigits: 0,
+              }).format(totalSpentVND)
             )}
           </div>
         </div>
@@ -224,6 +253,7 @@ export default function Dashboard() {
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Order Code</th>
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Status</th>
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Product</th>
+                      <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Nhân viên</th>
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Date</th>
                     </tr>
                   </thead>
@@ -239,6 +269,7 @@ export default function Dashboard() {
                           <StatusBadge status={order.status} />
                         </td>
                         <td className="px-6 py-5 text-on-surface">{order.productName || order.productName || "-"}</td>
+                        <td className="px-6 py-5 text-on-surface">{order.staffName || "-"}</td>
                         <td className="px-6 py-5 text-on-surface">{order.date}</td>
                       </tr>
                     ))}
@@ -257,18 +288,25 @@ export default function Dashboard() {
                 </svg>
                 Thanh Toán Nhanh
               </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {orders.slice(0, 2).map((order) => (
-                  <PaymentQR
-                    key={order.id as string | number}
-                    orderCode={order.orderCode || order.trackingId || order.id}
-                    amount={order.priceVND || order.price}
-                  />
-                ))}
+              <div className="flex flex-col gap-4">
+                {orders
+                  .filter(order => order.status !== "delivered")
+                  .map((order) => {
+                    const computedVND = computeOrderVND(order.priceUSD, order.exchangeRate, order.priceVND);
+                    return (
+                      <Fragment key={order.id}>
+                        <PaymentQR
+                          orderCode={order.orderCode || order.trackingId || order.id}
+                          status={order.status}
+                          amount={computedVND}
+                        />
+                      </Fragment>
+                    );
+                  })}
               </div>
-              {orders.length > 2 && (
+              {orders.filter(o => o.status !== "delivered").length === 0 && (
                 <p className="text-sm text-on-surface-variant mt-3 text-center">
-                  Hiển thị 2 đơn hàng gần nhất. Xem tất cả trong lịch sử đơn hàng.
+                  Không có đơn hàng nào cần thanh toán.
                 </p>
               )}
             </div>
@@ -417,28 +455,74 @@ export default function Dashboard() {
               </div>
 
               <div>
-                <label className="block text-sm font-bold text-on-surface-variant mb-1">Address From *</label>
+                <label className="block text-sm font-bold text-on-surface-variant mb-1">Warehouse Address *</label>
                 <input
                   type="text"
                   required
                   className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
-                  placeholder="Seller's shipping address"
-                  value={formData.addressFrom}
-                  onChange={(e) => setFormData({ ...formData, addressFrom: e.target.value })}
+                  placeholder="Enter warehouse address"
+                  value={formData.warehouseAddress}
+                  onChange={(e) => setFormData({ ...formData, warehouseAddress: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-on-surface-variant mb-1">Nhân viên nhập đơn *</label>
+                <input
+                  type="text"
+                  required
+                  className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
+                  placeholder="Nhập tên nhân viên"
+                  value={formData.staffName}
+                  onChange={(e) => setFormData({ ...formData, staffName: e.target.value })}
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-bold text-on-surface-variant mb-1">Address To *</label>
-                <input
-                  type="text"
-                  required
-                  className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
-                  placeholder="Your delivery address in Vietnam"
-                  value={formData.addressTo}
-                  onChange={(e) => setFormData({ ...formData, addressTo: e.target.value })}
-                />
+              {/* Price USD and Exchange Rate Section */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Price USD</label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant">$</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="w-full bg-surface-container-lowest rounded-full pl-8 pr-4 py-3"
+                      placeholder="0.00"
+                      value={formData.priceUSD}
+                      onChange={(e) => setFormData({ ...formData, priceUSD: formatCurrencyInput(e.target.value) })}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Exchange Rate (USD → VND) *</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    step="1"
+                    className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
+                    placeholder="e.g. 25000"
+                    value={formData.exchangeRate}
+                    onChange={(e) => setFormData({ ...formData, exchangeRate: e.target.value })}
+                  />
+                </div>
               </div>
+
+              {/* Live VND Preview */}
+              {formData.priceUSD && parseUSD(formData.priceUSD) > 0 && formData.exchangeRate && (
+                <div className="bg-primary/5 border border-primary/20 rounded-2xl p-4">
+                  <p className="text-sm text-on-surface-variant mb-1">Estimated VND Amount:</p>
+                  <p className="text-2xl font-headline text-primary">
+                    {new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND" }).format(
+                      calculateVND(formData.priceUSD, parseExchangeRate(formData.exchangeRate))
+                    )}
+                  </p>
+                  <p className="text-xs text-outline mt-1">
+                    {parseUSD(formData.priceUSD)} USD × {formatExchangeRate(parseExchangeRate(formData.exchangeRate))}
+                  </p>
+                </div>
+              )}
 
               {formError && (
                 <p className="text-sm text-red-600">{formError}</p>

@@ -6,19 +6,15 @@ const orderController = require("../controllers/orderController");
 const router = express.Router();
 
 // ============================================
-// PUBLIC ROUTES (No authentication required)
-// ============================================
-
-// Get current exchange rate (public)
-router.get("/exchange-rate", orderController.getCurrentExchangeRate);
-
-// ============================================
 // AUTHENTICATED ROUTES (User must be logged in)
 // ============================================
 
 // Track order by code (AUTHENTICATION REQUIRED)
 // Users can only track orders that belong to their email
 router.get("/track", authMiddleware, orderController.trackOrder);
+
+// Search orders by orderCode or customerName (AUTHENTICATED)
+router.get("/search", authMiddleware, orderController.searchOrders);
 
 // Get my orders (authenticated user's orders by email)
 router.get("/my-orders", authMiddleware, orderController.getMyOrders);
@@ -41,6 +37,9 @@ router.post("/admin", authMiddleware, roleMiddleware("admin"), orderController.a
 
 // Admin update order
 router.put("/:id", authMiddleware, roleMiddleware("admin"), orderController.adminUpdateOrder);
+
+// Admin delete order
+router.delete("/:id", authMiddleware, roleMiddleware("admin"), orderController.deleteOrder);
 
 // Admin approve order
 router.put("/:id/approve", authMiddleware, roleMiddleware("admin"), orderController.approveOrder);

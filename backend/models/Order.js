@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const statusValues = ["pending", "approved", "shipping", "delivered"];
 const paymentStatusValues = ["pending", "paid"];
+const contactTypeValues = ["email", "phone", "none"];
 
 const orderSchema = new mongoose.Schema(
   {
@@ -17,27 +18,38 @@ const orderSchema = new mongoose.Schema(
     productName: { type: String, required: true, trim: true },
     productLink: { type: String, trim: true },
 
-    // Address info
-    addressFrom: { type: String, required: true, trim: true },
-    addressTo: { type: String, required: true, trim: true },
+    // Warehouse address
+    warehouseAddress: { type: String, default: "", trim: true },
+    // Staff entering this order
+    staffName: { type: String, default: "", trim: true },
 
-    // Customer info (auto-filled from user)
+    // Legacy consolidated address kept for backward compatibility
+    address: { type: String, trim: true },
+
+    // Customer info
     customerName: { type: String, required: true, trim: true },
-    customerEmail: { type: String, required: true, lowercase: true, trim: true },
+
+    // Flexible contact — replaces customerEmail
+    contactType: {
+      type: String,
+      enum: contactTypeValues,
+      default: "email",
+    },
+    contactValue: { type: String, default: "", trim: true },
 
     // Status
     status: {
       type: String,
       required: true,
       enum: statusValues,
-      default: "pending"
+      default: "pending",
     },
 
     // Payment status
     paymentStatus: {
       type: String,
       enum: paymentStatusValues,
-      default: "pending"
+      default: "pending",
     },
 
     // Payment tracking (partial payments)
@@ -45,18 +57,21 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
-      max: 100
+      max: 100,
     },
     paidAmount: {
       type: Number,
-      default: 0
+      default: 0,
+    },
+    remainingAmount: {
+      type: Number,
+      default: 0,
     },
 
-    // Pricing (set by admin)
+    // Pricing — exchangeRate is user-provided (not from external API)
     priceUSD: { type: Number, default: 0 },
     priceVND: { type: Number, default: 0 },
     exchangeRate: { type: Number, default: 0 },
-    // Legacy aliases
     totalUSD: { type: Number, default: 0 },
     totalVND: { type: Number, default: 0 },
 
@@ -71,29 +86,30 @@ const orderSchema = new mongoose.Schema(
     approvedAt: { type: Date },
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
-    // Legacy tracking ID (for backward compatibility)
+    // Legacy tracking ID
     trackingId: { type: String, unique: true, sparse: true, index: true },
     tracking_code: { type: String, trim: true },
 
-    // Legacy address field (for backward compatibility with admin orders)
-    address: { type: String, trim: true },
+    // Legacy fields
+    origin: { type: String, trim: true },
+    destination: { type: String, trim: true },
+    product_name: { type: String, trim: true },
+    total_price: { type: Number, default: 0 },
+    weightKg: { type: Number },
+    serviceTier: { type: String },
+    packageCategory: { type: String },
   },
   { timestamps: { createdAt: "createdAt", updatedAt: "updatedAt" } }
 );
 
-// Virtual for display tracking code (priority: orderCode > tracking_code > trackingId > _id)
 orderSchema.virtual("displayId").get(function () {
   return this.orderCode || this.tracking_code || this.trackingId || this._id.toString();
 });
 
-// Ensure virtuals are included in JSON output
 orderSchema.set("toJSON", { virtuals: true });
 orderSchema.set("toObject", { virtuals: true });
 
-// Index for efficient tracking queries
 orderSchema.index({ orderCode: 1, userEmail: 1 });
-
-// Index for user orders
 orderSchema.index({ userEmail: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Order", orderSchema);

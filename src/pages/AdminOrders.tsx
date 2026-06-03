@@ -1,8 +1,37 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { Loader2, PlusCircle, Pencil, X, Package, ExternalLink, CheckCircle, RefreshCw } from "lucide-react";
+import { Loader2, PlusCircle, Pencil, X, Package, ExternalLink, CheckCircle, RefreshCw, Trash2 } from "lucide-react";
 import { SuccessModal } from "../components/Toast";
 import { formatCurrencyInput, formatVND, formatUSD, parseUSD, ensureUrlProtocol } from "../lib/formatters";
+import { calculateVND, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
+import { getWarehouseAddress, computeOrderVND, getMongoOrderId, resolveContactDisplay } from "../lib/orderUtils";
+
+// ─── Contact helpers ─────────────────────────────────────────────────────────
+
+export type ContactType = "email" | "phone" | "none";
+
+/** Parse contact fields from API response */
+function parseOrderContact(order: {
+  contactType?: string;
+  contactValue?: string;
+}): { contactType: ContactType; contactValue: string } {
+  const ct = order.contactType;
+  const cv = order.contactValue || "";
+  if (ct === "phone") return { contactType: "phone", contactValue: cv };
+  if (ct === "none" || cv === "NO_CONTACT") return { contactType: "none", contactValue: "NO_CONTACT" };
+  if (ct === "email") return { contactType: "email", contactValue: cv };
+  return { contactType: "email", contactValue: "" };
+}
+
+function isValidEmail(v: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+}
+
+function isValidPhone(v: string): boolean {
+  // Accept any string with at least 6 digits (handles international formats like +84, 0912, etc.)
+  const digits = v.replace(/[^\d]/g, "");
+  return digits.length >= 6;
+}
 
 interface Order {
   _id?: string;
@@ -14,8 +43,8 @@ interface Order {
   productName?: string;
   productType?: string;
   address: string;
-  addressFrom?: string;
-  addressTo?: string;
+  warehouseAddress?: string;
+  staffName?: string;
   total_price: number;
   order_date: string;
   sold_by: string;
@@ -23,13 +52,15 @@ interface Order {
   paymentStatus?: string;
   paymentPercent?: number;
   paidAmount?: number;
+  totalVND?: number;
   userId?: string;
   origin?: string;
   destination?: string;
   date: string;
   createdAt: string;
   customerName?: string;
-  customerEmail?: string;
+  contactType?: ContactType;
+  contactValue?: string;
   productLink?: string;
   uspsTracking?: string;
   priceUSD?: number;
@@ -41,13 +72,14 @@ interface Order {
 }
 
 interface OrderFormData {
+  orderCode: string;
   tracking_code: string;
   product_name: string;
   productName: string;
   productType: string;
   address: string;
-  addressFrom: string;
-  addressTo: string;
+  warehouseAddress: string;
+  staffName: string;
   total_price: string;
   order_date: string;
   sold_by: string;
@@ -57,7 +89,8 @@ interface OrderFormData {
   paidAmount: string;
   user_id: string;
   customerName: string;
-  customerEmail: string;
+  contactType: ContactType;
+  contactValue: string;
   productLink: string;
   uspsTracking: string;
   priceUSD: string;
@@ -66,13 +99,14 @@ interface OrderFormData {
 }
 
 const initialFormData: OrderFormData = {
+  orderCode: "",
   tracking_code: "",
   product_name: "",
   productName: "",
   productType: "",
   address: "",
-  addressFrom: "",
-  addressTo: "",
+  warehouseAddress: "",
+  staffName: "",
   total_price: "",
   order_date: new Date().toISOString().split("T")[0],
   sold_by: "",
@@ -82,7 +116,8 @@ const initialFormData: OrderFormData = {
   paidAmount: "",
   user_id: "",
   customerName: "",
-  customerEmail: "",
+  contactType: "email" as ContactType,
+  contactValue: "",
   productLink: "",
   uspsTracking: "",
   priceUSD: "",
@@ -118,33 +153,144 @@ const PaymentStatusBadge = ({ status }: { status: string }) => {
   );
 };
 
-// Component to display VND price with proper state handling
-const VNDCell = ({ priceUSD, priceVND, onRecalculate }: { priceUSD?: number; priceVND?: number; onRecalculate?: () => void }) => {
-  // If we have a valid VND number, display it
-  if (typeof priceVND === "number" && priceVND > 0) {
-    return (
-      <span className="text-primary font-medium">
-        {new Intl.NumberFormat("vi-VN").format(priceVND)} đ
-      </span>
-    );
+// Component to display VND price - always compute from USD
+const VNDCell = ({ priceUSD, priceVND, exchangeRate }: { priceUSD?: number; priceVND?: number; exchangeRate?: number }) => {
+  const computedVND = computeOrderVND(priceUSD, exchangeRate, priceVND);
+  
+  return (
+    <span className="text-primary font-medium">
+      {new Intl.NumberFormat("vi-VN").format(computedVND)} đ
+    </span>
+  );
+};
+
+// ─── Payment Section ──────────────────────────────────────────────────────────
+
+interface PaymentSectionProps {
+  totalVND: string;
+  paymentPercent: string;
+  paidAmount: string;
+  status: string;
+  onChange: (updates: { paymentPercent: string; paidAmount: string; paymentStatus: string }) => void;
+}
+
+function formatVNDInput(n: number): string {
+  return new Intl.NumberFormat("vi-VN").format(Math.round(n));
+}
+
+function parseVND(v: string): number {
+  return Number(String(v).replace(/[^\d]/g, "")) || 0;
+}
+
+const PaymentSection = ({ totalVND, paymentPercent, paidAmount, status, onChange }: PaymentSectionProps) => {
+  const total = parseVND(totalVND);
+  const pct = Math.min(100, Math.max(0, Number(paymentPercent) || 0));
+  const paid = parseVND(paidAmount);
+  const remaining = total - paid;
+
+  if (status !== "pending") {
+    return null;
   }
 
-  // If we have USD but no VND, show recalculate button
-  if (priceUSD && priceUSD > 0) {
-    return (
-      <button
-        onClick={onRecalculate}
-        className="text-amber-600 italic hover:text-amber-800 flex items-center gap-1"
-        title="Click to calculate VND"
-      >
-        <RefreshCw className="w-3 h-3" />
-        Update VND
-      </button>
-    );
-  }
+  const handlePercentChange = (newPct: number) => {
+    const clampedPct = Math.min(100, Math.max(0, newPct));
+    const newPaid = total > 0 ? Math.round((clampedPct / 100) * total) : 0;
+    onChange({
+      paymentPercent: clampedPct.toString(),
+      paidAmount: newPaid.toString(),
+      paymentStatus: clampedPct >= 100 ? "paid" : "pending",
+    });
+  };
 
-  // No price at all
-  return <span className="text-gray-400">-</span>;
+  const handlePaidAmountChange = (newPaidStr: string) => {
+    const raw = parseVND(newPaidStr);
+    const clamped = Math.min(total, Math.max(0, raw));
+    const newPct = total > 0 ? Math.round((clamped / total) * 100) : 0;
+    onChange({
+      paymentPercent: newPct.toString(),
+      paidAmount: clamped.toString(),
+      paymentStatus: newPct >= 100 ? "paid" : "pending",
+    });
+  };
+
+  const isPaid = pct >= 100;
+
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <label className="text-sm font-bold text-amber-800">Payment</label>
+        <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+          isPaid ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"
+        }`}>
+          {isPaid ? "Paid" : `${pct}% Paid`}
+        </span>
+      </div>
+
+      {/* Paid Amount VND */}
+      <div>
+        <label className="block text-xs font-medium text-amber-700 mb-1">Paid Amount (VND)</label>
+        <div className="relative">
+          <input
+            type="number"
+            inputMode="numeric"
+            min="0"
+            max={total || undefined}
+            className="w-full bg-white rounded-xl px-4 py-2.5 pr-14 font-bold text-amber-900 border border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400"
+            value={paid > 0 ? paid : ""}
+            placeholder="0"
+            onChange={(e) => handlePaidAmountChange(e.target.value)}
+          />
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-amber-500">VND</span>
+        </div>
+      </div>
+
+      {/* Percentage slider + input */}
+      <div>
+        <div className="flex items-center justify-between text-xs text-amber-700 mb-1">
+          <span>Percentage</span>
+          <span className="font-bold">{pct}%</span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          className="w-full h-2 bg-amber-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
+          value={pct}
+          onChange={(e) => handlePercentChange(Number(e.target.value))}
+        />
+      </div>
+
+      {/* Percentage numeric input */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-amber-700 font-medium">%</span>
+        <input
+          type="number"
+          min="0"
+          max="100"
+          className="w-20 bg-white rounded-xl px-3 py-2 text-center font-bold text-amber-900 border border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-400"
+          value={pct}
+          onChange={(e) => handlePercentChange(Number(e.target.value) || 0)}
+        />
+      </div>
+
+      {/* Summary */}
+      {total > 0 && (
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <div className="bg-white rounded-xl px-3 py-2 border border-amber-200">
+            <p className="text-[10px] text-amber-500 font-medium uppercase tracking-wider">Paid</p>
+            <p className="text-sm font-bold text-amber-900">{formatVNDInput(paid)} đ</p>
+          </div>
+          <div className="bg-white rounded-xl px-3 py-2 border border-amber-200">
+            <p className="text-[10px] text-amber-500 font-medium uppercase tracking-wider">Remaining</p>
+            <p className={`text-sm font-bold ${remaining <= 0 ? "text-green-600" : "text-red-600"}`}>
+              {remaining <= 0 ? "—" : `${formatVNDInput(remaining)} đ`}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default function AdminOrders() {
@@ -157,43 +303,18 @@ export default function AdminOrders() {
   const [formError, setFormError] = useState("");
   const [formLoading, setFormLoading] = useState(false);
   const [successData, setSuccessData] = useState<{ title: string; message: string } | null>(null);
-  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
-  const [fetchingRate, setFetchingRate] = useState(false);
 
-  // Preview VND price
+  // Preview VND price based on user-entered exchange rate
   const previewPriceVND = () => {
     const usd = parseUSD(formData.priceUSD);
-    return exchangeRate ? usd * exchangeRate : 0;
+    const rate = parseExchangeRate(formData.exchangeRate);
+    if (!rate || rate <= 0) return 0;
+    return calculateVND(usd, rate);
   };
-
-  // Fetch exchange rate directly from open.er-api.com
-  async function fetchExchangeRate() {
-    setFetchingRate(true);
-    try {
-      const res = await fetch("https://open.er-api.com/v6/latest/USD");
-      const data = await res.json();
-      if (data.rates && data.rates.VND) {
-        setExchangeRate(data.rates.VND);
-      }
-    } catch (err) {
-      console.warn("Failed to fetch exchange rate:", err);
-      // Fallback to backend API
-      try {
-        const apiData = await api.get("/api/orders/exchange-rate");
-        if (apiData.rate) {
-          setExchangeRate(apiData.rate);
-        }
-      } catch (apiErr) {
-        console.warn("Backend exchange rate also failed:", apiErr);
-      }
-    } finally {
-      setFetchingRate(false);
-    }
-  }
 
   async function loadOrders() {
     try {
-      const data = await api.get("/api/orders");
+      const data = await api.get(`/api/orders?_=${Date.now()}`);
       setOrders(data.orders || []);
     } catch (err: any) {
       setError(err.message || "Failed to load orders");
@@ -204,11 +325,6 @@ export default function AdminOrders() {
 
   useEffect(() => {
     loadOrders();
-    fetchExchangeRate();
-
-    // Auto refresh exchange rate every 5 minutes
-    const interval = setInterval(fetchExchangeRate, 5 * 60 * 1000);
-    return () => clearInterval(interval);
   }, []);
 
   function openCreateModal() {
@@ -221,13 +337,14 @@ export default function AdminOrders() {
   function openEditModal(order: Order) {
     setEditingOrder(order);
     setFormData({
+      orderCode: order.orderCode || "",
       tracking_code: order.tracking_code || order.trackingId || "",
       product_name: order.product_name || order.productName || "",
       productName: order.productName || order.product_name || "",
       productType: order.productType || "",
-      address: order.address || order.addressFrom || order.destination || "",
-      addressFrom: order.addressFrom || order.origin || "",
-      addressTo: order.addressTo || order.destination || "",
+      address: getWarehouseAddress(order),
+      warehouseAddress: getWarehouseAddress(order),
+      staffName: order.staffName ?? "",
       total_price: order.total_price?.toString() || "",
       order_date: order.order_date ? new Date(order.order_date).toISOString().split("T")[0] : "",
       sold_by: order.sold_by || "",
@@ -237,11 +354,11 @@ export default function AdminOrders() {
       paidAmount: order.paidAmount?.toString() || "",
       user_id: order.userId || "",
       customerName: order.customerName || "",
-      customerEmail: order.customerEmail || "",
+      ...parseOrderContact(order),
       productLink: order.productLink || "",
       uspsTracking: order.uspsTracking || "",
       priceUSD: order.priceUSD?.toString() || order.totalUSD?.toString() || "",
-      exchangeRate: order.exchangeRate?.toString() || exchangeRate.toString(),
+      exchangeRate: order.exchangeRate?.toString() || "",
       totalVND: order.priceVND?.toString() || order.totalVND?.toString() || "",
     });
     setFormError("");
@@ -265,11 +382,12 @@ export default function AdminOrders() {
       const response = await api.put(`/api/orders/${orderId}/approve`);
       // Immediately update the orders state
       if (response.order) {
-        setOrders(prev => prev.map(order =>
-          order._id === response.order._id || order.id === response.order.id
-            ? response.order
-            : order
-        ));
+        setOrders((prev) =>
+          prev.map((order) =>
+            String(order._id) === String(response.order._id) ? response.order : order
+          )
+        );
+        await loadOrders();
       }
       setSuccessData({
         title: "Order Approved!",
@@ -285,11 +403,12 @@ export default function AdminOrders() {
       const response = await api.post(`/api/orders/${orderId}/recalculate`);
       // Immediately update the orders state
       if (response.order) {
-        setOrders(prev => prev.map(order =>
-          order._id === response.order._id || order.id === response.order.id
-            ? response.order
-            : order
-        ));
+        setOrders((prev) =>
+          prev.map((order) =>
+            String(order._id) === String(response.order._id) ? response.order : order
+          )
+        );
+        await loadOrders();
       }
       setSuccessData({
         title: "VND Recalculated!",
@@ -300,15 +419,74 @@ export default function AdminOrders() {
     }
   }
 
+  async function handleDelete(orderId: string) {
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this order? This action cannot be undone."
+    );
+    if (!confirmed) return;
+
+    try {
+      await api.delete(`/api/orders/${orderId}`);
+      setOrders((prev) => prev.filter((order) => String(order._id) !== orderId));
+      setSuccessData({
+        title: "Order Deleted",
+        message: "The order has been removed from the database and Google Sheets.",
+      });
+    } catch (err: any) {
+      setError(err.message || "Failed to delete order");
+    }
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError("");
     setFormLoading(true);
 
     try {
+      if (!formData.warehouseAddress.trim()) {
+        setFormError("Warehouse address is required");
+        setFormLoading(false);
+        return;
+      }
+
+      // staffName required only when creating a new order (legacy orders may not have it yet)
+      if (!editingOrder && !formData.staffName.trim()) {
+        setFormError("Nhân viên nhập đơn is required");
+        setFormLoading(false);
+        return;
+      }
+
+      const rate = parseExchangeRate(formData.exchangeRate);
+      if (!editingOrder && (!rate || rate <= 0)) {
+        setFormError("Exchange rate must be greater than 0");
+        setFormLoading(false);
+        return;
+      }
+      if (editingOrder && formData.exchangeRate && (!rate || rate <= 0)) {
+        setFormError("Exchange rate must be greater than 0");
+        setFormLoading(false);
+        return;
+      }
+
+      // Contact validation
+      if (formData.contactType === "email") {
+        if (!formData.contactValue.trim() || !isValidEmail(formData.contactValue)) {
+          setFormError("Please enter a valid email address.");
+          setFormLoading(false);
+          return;
+        }
+      } else if (formData.contactType === "phone") {
+        if (!formData.contactValue.trim() || !isValidPhone(formData.contactValue)) {
+          setFormError("Please enter a valid phone number (digits only, allow +84).");
+          setFormLoading(false);
+          return;
+        }
+      }
+
       // Build payload with all required fields
       const payload: any = {
         // Order identification
+        orderCode: formData.orderCode || undefined,
         tracking_code: formData.tracking_code || undefined,
         order_date: formData.order_date || undefined,
 
@@ -318,47 +496,67 @@ export default function AdminOrders() {
         productType: formData.productType,
         productLink: formData.productLink || undefined,
 
-        // Addresses
-        addressFrom: formData.addressFrom,
-        addressTo: formData.addressTo,
-        address: formData.address || formData.addressTo || formData.addressFrom,
+        warehouseAddress: formData.warehouseAddress.trim(),
+        staffName: formData.staffName.trim(),
+        address: formData.warehouseAddress.trim(),
 
         // Customer info
         customerName: formData.customerName,
-        customerEmail: formData.customerEmail,
+        contactType: formData.contactType,
+        contactValue:
+          formData.contactType === "none" ? "NO_CONTACT" : formData.contactValue.trim(),
 
         // Pricing
         priceUSD: formData.priceUSD,
         total_price: formData.total_price ? parseFloat(formData.total_price) : 0,
         exchangeRate: formData.exchangeRate ? parseFloat(formData.exchangeRate) : undefined,
-        totalVND: formData.totalVND ? parseFloat(formData.totalVND) : undefined,
+        // Always send totalVND so the backend can trust it for remainingAmount calculation
+        totalVND: formData.totalVND ? parseFloat(formData.totalVND) : 0,
 
         // Status (admin only)
         sold_by: formData.sold_by || undefined,
         status: formData.status,
         paymentStatus: formData.paymentStatus,
         paymentPercent: formData.paymentPercent ? Number(formData.paymentPercent) : 0,
+        // Always send paidAmount (including 0) so backend knows the user saw/edited it
+        paidAmount: Number(formData.paidAmount) || 0,
+        // Backend will recalculate remainingAmount from totalVND - paidAmount
         uspsTracking: formData.uspsTracking || undefined,
       };
 
-      // Log payload for debugging
-      console.log("ORDER PAYLOAD:", payload);
-
       if (editingOrder) {
-        const response = await api.put(`/api/orders/${editingOrder._id || editingOrder.id}`, payload);
-        // Immediately update the orders state with the returned order
-        if (response.order) {
-          setOrders(prev => prev.map(order =>
-            order._id === response.order._id || order.id === response.order.id
-              ? response.order
-              : order
-          ));
+        const orderId = getMongoOrderId(editingOrder);
+        console.log("[AdminOrders] PUT /api/orders/" + orderId, payload);
+
+        const response = await api.put(`/api/orders/${orderId}`, payload);
+
+        if (!response?.order) {
+          throw new Error("Update failed: server did not return the updated order.");
         }
+
+        console.log("[AdminOrders] Update response:", {
+          _id: response.order._id,
+          staffName: response.order.staffName,
+          warehouseAddress: response.order.warehouseAddress,
+          exchangeRate: response.order.exchangeRate,
+          contactType: response.order.contactType,
+          contactValue: response.order.contactValue,
+        });
+
+        setOrders((prev) =>
+          prev.map((order) =>
+            String(order._id) === String(response.order._id) ? response.order : order
+          )
+        );
+
+        await loadOrders();
+
         setSuccessData({
           title: "Order Updated!",
           message: "The order has been updated successfully.",
         });
       } else {
+        console.log("[AdminOrders] POST /api/orders/admin", payload);
         // For new orders, use admin create endpoint
         const response = await api.post("/api/orders/admin", payload);
         if (response.order) {
@@ -370,7 +568,9 @@ export default function AdminOrders() {
         });
       }
       closeModal();
-      loadOrders();
+      if (!editingOrder) {
+        await loadOrders();
+      }
     } catch (err: any) {
       setFormError(err.message || "Failed to save order");
     } finally {
@@ -382,25 +582,13 @@ export default function AdminOrders() {
     <div className="max-w-7xl mx-auto px-8 pb-20 space-y-8">
       <div className="flex justify-between items-center pt-10">
         <h1 className="text-4xl font-headline text-primary">Manage Orders</h1>
-        <div className="flex items-center gap-4">
-          <div className="text-sm text-on-surface-variant">
-            <span className="font-medium">Exchange Rate:</span> {exchangeRate ? exchangeRate.toLocaleString() : "Loading..."} VND/USD
-            <button
-              onClick={fetchExchangeRate}
-              className="ml-2 p-1 hover:bg-surface-container-high rounded-full transition-colors"
-              title="Refresh rate"
-            >
-              <RefreshCw className={`w-4 h-4 ${fetchingRate ? "animate-spin" : ""}`} />
-            </button>
-          </div>
-          <button
-            onClick={openCreateModal}
-            className="bg-primary text-on-primary px-6 py-3 rounded-full font-bold flex items-center gap-2 hover:bg-primary/90 transition-all shadow-lg"
-          >
-            <PlusCircle className="w-5 h-5" />
-            Create Order
-          </button>
-        </div>
+        <button
+          onClick={openCreateModal}
+          className="bg-primary text-on-primary px-6 py-3 rounded-full font-bold flex items-center gap-2 hover:bg-primary/90 transition-all shadow-lg"
+        >
+          <PlusCircle className="w-5 h-5" />
+          Create Order
+        </button>
       </div>
 
       {loading ? (
@@ -434,6 +622,8 @@ export default function AdminOrders() {
                 <tr className="text-left bg-surface-container-high/50">
                   <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Order Code</th>
                   <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Product</th>
+                  <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Warehouse Address</th>
+                  <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Nhân viên</th>
                   <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Customer</th>
                   <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Price USD</th>
                   <th className="px-4 py-3 text-sm text-on-surface-variant font-bold">Price VND</th>
@@ -463,10 +653,17 @@ export default function AdminOrders() {
                         )}
                       </div>
                     </td>
+                    <td className="px-4 py-3 text-sm max-w-[180px] truncate">{getWarehouseAddress(order) || "-"}</td>
+                    <td className="px-4 py-3 text-sm max-w-[130px] truncate">{order.staffName || "-"}</td>
                     <td className="px-4 py-3 text-sm">
                       <div className="max-w-[150px]">
                         <p className="truncate font-medium">{order.customerName || "-"}</p>
-                        <p className="text-xs text-outline truncate">{order.customerEmail || ""}</p>
+                        <p className="text-xs text-outline truncate">
+                          {resolveContactDisplay(
+                            order.contactType,
+                            order.contactValue
+                          )}
+                        </p>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm font-medium">
@@ -476,7 +673,7 @@ export default function AdminOrders() {
                       <VNDCell
                         priceUSD={order.priceUSD}
                         priceVND={order.priceVND}
-                        onRecalculate={() => handleRecalculate(order._id || order.id)}
+                        exchangeRate={order.exchangeRate}
                       />
                     </td>
                     <td className="px-4 py-3">
@@ -503,7 +700,7 @@ export default function AdminOrders() {
                       <div className="flex items-center gap-2">
                         {order.status === "pending" && (
                           <button
-                            onClick={() => handleApprove(order._id || order.id)}
+                            onClick={() => handleApprove(getMongoOrderId(order))}
                             className="p-2 hover:bg-green-100 rounded-full transition-colors"
                             title="Approve order"
                           >
@@ -516,6 +713,13 @@ export default function AdminOrders() {
                           title="Edit order"
                         >
                           <Pencil className="w-4 h-4 text-primary" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(getMongoOrderId(order))}
+                          className="p-2 hover:bg-red-50 rounded-full transition-colors"
+                          title="Delete order"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
                         </button>
                       </div>
                     </td>
@@ -599,30 +803,29 @@ export default function AdminOrders() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Address From *</label>
-                  <input
-                    type="text"
-                    required
-                    className="w-full bg-surface-container-lowest rounded-full px-4 py-3"
-                    placeholder="Origin address"
-                    value={formData.addressFrom}
-                    onChange={(e) => setFormData({ ...formData, addressFrom: e.target.value })}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Address To *</label>
-                  <input
-                    type="text"
-                    required
-                    className="w-full bg-surface-container-lowest rounded-full px-4 py-3"
-                    placeholder="Destination address"
-                    value={formData.addressTo}
-                    onChange={(e) => setFormData({ ...formData, addressTo: e.target.value })}
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-bold text-on-surface-variant mb-1">Warehouse Address *</label>
+                <input
+                  type="text"
+                  required
+                  className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
+                  placeholder="Enter warehouse address"
+                  value={formData.warehouseAddress}
+                  onChange={(e) => setFormData({ ...formData, warehouseAddress: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-on-surface-variant mb-1">
+                  Nhân viên nhập đơn{!editingOrder ? " *" : ""}
+                </label>
+                <input
+                  type="text"
+                  required={!editingOrder}
+                  className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
+                  placeholder="Nhập tên nhân viên"
+                  value={formData.staffName}
+                  onChange={(e) => setFormData({ ...formData, staffName: e.target.value })}
+                />
               </div>
 
               <div>
@@ -637,41 +840,90 @@ export default function AdminOrders() {
                 />
               </div>
 
+              {/* Customer Contact */}
               <div>
-                <label className="block text-sm font-bold text-on-surface-variant mb-1">Customer Email *</label>
-                <input
-                  type="email"
-                  required
-                  className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
-                  placeholder="customer@email.com"
-                  value={formData.customerEmail}
-                  onChange={(e) => setFormData({ ...formData, customerEmail: e.target.value })}
-                />
-              </div>
-
-              {/* Price USD with Live VND Preview */}
-              <div>
-                <label className="block text-sm font-bold text-on-surface-variant mb-1">Price USD</label>
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant">$</span>
+                <label className="block text-sm font-bold text-on-surface-variant mb-1">Customer Contact *</label>
+                <div className="flex gap-2">
+                  <select
+                    className="bg-surface-container-lowest rounded-full px-4 py-3 text-sm font-medium"
+                    value={formData.contactType}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        contactType: e.target.value as ContactType,
+                        contactValue:
+                          e.target.value === "none" ? "NO_CONTACT" : "",
+                      }))
+                    }
+                  >
+                    <option value="email">Email</option>
+                    <option value="phone">Phone</option>
+                    <option value="none">No Contact</option>
+                  </select>
                   <input
-                    type="text"
-                    inputMode="decimal"
-                    className="w-full bg-surface-container-lowest rounded-full pl-8 pr-4 py-3"
-                    placeholder="1,000"
-                    value={formData.priceUSD}
-                    onChange={(e) => handlePriceUSDChange(e.target.value)}
+                    type={formData.contactType === "email" ? "email" : "tel"}
+                    disabled={formData.contactType === "none"}
+                    className="flex-1 bg-surface-container-lowest rounded-full px-6 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                    placeholder={
+                      formData.contactType === "email"
+                        ? "customer@email.com"
+                        : formData.contactType === "phone"
+                        ? "0987654321"
+                        : "No Contact"
+                    }
+                    value={formData.contactValue}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, contactValue: e.target.value }))
+                    }
                   />
                 </div>
-                {formData.priceUSD && parseUSD(formData.priceUSD) > 0 && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <p className="text-sm text-primary font-medium">
-                      VND: {formatVND(previewPriceVND())}
-                    </p>
-                    <span className="text-xs text-outline">(@ {exchangeRate ? exchangeRate.toLocaleString() : "..."} VND)</span>
-                  </div>
-                )}
               </div>
+
+              {/* Price USD and Exchange Rate Section */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Price USD</label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant">$</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="w-full bg-surface-container-lowest rounded-full pl-8 pr-4 py-3"
+                      placeholder="0.00"
+                      value={formData.priceUSD}
+                      onChange={(e) => handlePriceUSDChange(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Exchange Rate (USD → VND)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
+                    placeholder="e.g. 25000"
+                    value={formData.exchangeRate}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, exchangeRate: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              {/* Live VND Preview */}
+              {formData.priceUSD && parseUSD(formData.priceUSD) > 0 && formData.exchangeRate && (
+                <div className="bg-primary/5 border border-primary/20 rounded-2xl p-4">
+                  <p className="text-sm text-on-surface-variant mb-1">Estimated VND Amount:</p>
+                  <p className="text-2xl font-headline text-primary">
+                    {new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND" }).format(
+                      previewPriceVND()
+                    )}
+                  </p>
+                  <p className="text-xs text-outline mt-1">
+                    {parseUSD(formData.priceUSD)} USD × {formatExchangeRate(parseExchangeRate(formData.exchangeRate))}
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-bold text-on-surface-variant mb-1">USPS Tracking Number</label>
@@ -702,16 +954,17 @@ export default function AdminOrders() {
                     value={formData.status}
                     onChange={(e) => {
                       const newStatus = e.target.value;
-                      // Auto-set payment to 100% when delivered
                       if (newStatus === "delivered") {
+                        const total = parseVND(formData.totalVND);
                         setFormData({
                           ...formData,
                           status: newStatus,
                           paymentPercent: "100",
+                          paidAmount: total.toString(),
                           paymentStatus: "paid",
                         });
                       } else {
-                        setFormData({ ...formData, status: newStatus });
+                        setFormData((prev) => ({ ...prev, status: newStatus }));
                       }
                     }}
                   >
@@ -723,63 +976,15 @@ export default function AdminOrders() {
                 </div>
               </div>
 
-              {/* Conditional Payment Percentage Input - Only for Pending orders */}
-              {formData.status === "pending" && (
-                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-sm font-bold text-amber-800">Payment Percentage</label>
-                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                      Number(formData.paymentPercent) >= 100
-                        ? "bg-green-100 text-green-800"
-                        : "bg-amber-100 text-amber-800"
-                    }`}>
-                      {Number(formData.paymentPercent) >= 100 ? "Paid" : "Partial"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      className="flex-1 h-2 bg-amber-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
-                      value={formData.paymentPercent}
-                      onChange={(e) => {
-                        const percent = e.target.value;
-                        setFormData({
-                          ...formData,
-                          paymentPercent: percent,
-                          paymentStatus: Number(percent) >= 100 ? "paid" : "pending",
-                        });
-                      }}
-                    />
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        className="w-20 bg-white rounded-full px-3 py-2 text-center font-bold border border-amber-300"
-                        value={formData.paymentPercent}
-                        onChange={(e) => {
-                          const percent = Math.min(100, Math.max(0, Number(e.target.value) || 0));
-                          setFormData({
-                            ...formData,
-                            paymentPercent: percent.toString(),
-                            paymentStatus: percent >= 100 ? "paid" : "pending",
-                          });
-                        }}
-                      />
-                      <span className="text-amber-800 font-bold">%</span>
-                    </div>
-                  </div>
-                  {formData.totalVND && Number(formData.totalVND) > 0 && (
-                    <p className="text-xs text-amber-700">
-                      Estimated paid: {formatVND(Number(formData.totalVND) * Number(formData.paymentPercent) / 100)}
-                    </p>
-                  )}
-                </div>
-              )}
+              {/* Payment Section — bidirectional % ↔ VND sync */}
+              <PaymentSection
+                totalVND={formData.totalVND}
+                paymentPercent={formData.paymentPercent}
+                paidAmount={formData.paidAmount}
+                status={formData.status}
+                onChange={(updates) => setFormData((prev) => ({ ...prev, ...updates }))}
+              />
 
-              {/* Payment Status - Auto-managed based on status and percentage */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-on-surface-variant mb-1">
@@ -794,7 +999,7 @@ export default function AdminOrders() {
                     }`}
                     value={formData.paymentStatus}
                     disabled={formData.status === "pending"}
-                    onChange={(e) => setFormData({ ...formData, paymentStatus: e.target.value })}
+                    onChange={(e) => setFormData({ ...prev, paymentStatus: e.target.value })}
                   >
                     <option value="pending">Pending</option>
                     <option value="paid">Paid</option>
@@ -808,7 +1013,7 @@ export default function AdminOrders() {
                     className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
                     placeholder="Seller name"
                     value={formData.sold_by}
-                    onChange={(e) => setFormData({ ...formData, sold_by: e.target.value })}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, sold_by: e.target.value }))}
                   />
                 </div>
               </div>

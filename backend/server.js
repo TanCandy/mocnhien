@@ -1,3 +1,5 @@
+console.log("Starting server...");
+
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
@@ -6,10 +8,16 @@ const dotenv = require("dotenv");
 
 dotenv.config({ path: path.join(__dirname, ".env") });
 
+console.log("Environment loaded");
+console.log("MONGODB_URI:", process.env.MONGODB_URI ? "SET" : "NOT SET");
+console.log("JWT_SECRET:", process.env.JWT_SECRET ? "SET" : "NOT SET");
+
 const { env } = require("./config/env");
 const { connectDB } = require("./config/db");
 const apiRoutes = require("./routes");
 const { errorHandler } = require("./middleware/errorHandler");
+
+console.log("Imports complete");
 
 const app = express();
 
@@ -17,16 +25,12 @@ const app = express();
 // MIDDLEWARE
 // ====================
 
-// CORS - allow all origins for API access
 app.use(cors({
   origin: "*",
   credentials: true
 }));
 
-// JSON body parser
 app.use(express.json());
-
-// Cookie parser
 app.use(cookieParser());
 
 // ====================
@@ -47,12 +51,10 @@ app.get("/health", (req, res) => {
 
 app.use("/api", apiRoutes);
 
-// 404 handler for unmatched API routes
 app.use("/api", (req, res) => {
   res.status(404).json({ error: "Endpoint not found" });
 });
 
-// Error handler (LAST)
 app.use(errorHandler);
 
 // ====================
@@ -60,26 +62,28 @@ app.use(errorHandler);
 // ====================
 
 const PORT = process.env.PORT || env.PORT || 4000;
+console.log("PORT:", PORT);
 
 async function startServer() {
-  try {
-    // Validate required env vars
-    if (!env.MONGODB_URI) {
-      throw new Error("Missing required env var: MONGODB_URI");
-    }
-    if (!env.JWT_SECRET) {
-      throw new Error("Missing required env var: JWT_SECRET");
-    }
+  console.log("Starting server...");
+  
+  if (!process.env.MONGODB_URI) {
+    console.error("❌ Missing MONGODB_URI");
+    process.exit(1);
+  }
+  
+  if (!process.env.JWT_SECRET) {
+    console.error("❌ Missing JWT_SECRET");
+    process.exit(1);
+  }
 
-    // Connect to MongoDB
+  try {
     console.log("🔌 Connecting to MongoDB...");
-    await connectDB(env.MONGODB_URI);
+    await connectDB(process.env.MONGODB_URI);
     console.log("✅ MongoDB connected");
 
-    // Start server
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`   Environment: ${env.NODE_ENV}`);
+      console.log(`🚀 Server running on http://localhost:${PORT}`);
       console.log(`   Health: http://localhost:${PORT}/health`);
     });
 
@@ -89,16 +93,13 @@ async function startServer() {
   }
 }
 
-// Handle unhandled rejections
 process.on("unhandledRejection", (err) => {
   console.error("❌ Unhandled Rejection:", err.message);
-  console.error(err.stack);
+  process.exit(1);
 });
 
-// Handle uncaught exceptions
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err.message);
-  console.error(err.stack);
   process.exit(1);
 });
 
