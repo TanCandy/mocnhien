@@ -12,7 +12,7 @@ const mongoose = require("mongoose");
 
 // Connect to MongoDB
 const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/moc-nhien";
-const Order = require("./models/Order");
+const Order = require("../models/Order");
 
 async function migrate() {
   console.log("Starting migration: Populate userEmail field\n");
