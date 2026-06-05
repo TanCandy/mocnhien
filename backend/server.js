@@ -77,14 +77,16 @@ app.use("/api", apiRoutes);
 
 // ====================
 // SERVE FRONTEND SPA — fallback for non-API routes
-// app.use() (no path) catches unmatched requests without path-to-regexp
+// app.use() (no path) acts as a catch-all WITHOUT invoking path-to-regexp,
+// so it works safely with Express 5 / path-to-regexp v7.
+// Must come AFTER API routes so /api/* never reaches here.
 // ====================
 app.use((req, res) => {
-  if (req.path.startsWith("/api")) {
-    return res.status(404).json({ error: "Endpoint not found" });
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'Endpoint not found' });
   }
-  res.sendFile(path.join(distPath, "index.html"), (err) => {
-    if (err) res.status(200).json({ status: "ok", note: "Frontend not built" });
+  res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'), (err) => {
+    if (err) res.status(200).json({ status: 'ok', note: 'Frontend not built' });
   });
 });
 
