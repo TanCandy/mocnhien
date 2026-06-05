@@ -16,5 +16,10 @@ router.use("/quotes", quoteRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/user", userRoutes);
 
+// 404 handler for unmatched /api/* routes
+router.use((req, res) => {
+  res.status(404).json({ error: "Endpoint not found" });
+});
+
 module.exports = router;
 
