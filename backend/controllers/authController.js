@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const { env } = require("../config/env");
 const User = require("../models/User");
 const authService = require("../services/authService");
+const { sendResetEmail } = require("../utils/email");
 
 // =============================================
 //  TOKEN / COOKIE HELPERS
@@ -129,9 +130,8 @@ async function forgotPassword(req, res) {
 
   try {
     const { rawToken } = await authService.issuePasswordResetToken(user);
-    const resetLink = authService.buildResetUrl(rawToken);
     try {
-      await authService.sendPasswordResetEmail(user.email, user.name, resetLink);
+      await sendResetEmail(user.email, rawToken, user.name);
     } catch (emailErr) {
       console.error("[ForgotPassword] Email failed:", emailErr.message);
       return res.status(500).json({ message: "Failed to send reset email." });

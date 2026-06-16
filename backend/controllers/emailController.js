@@ -1,13 +1,6 @@
-const { sendEmail, verifyConnection } = require("../utils/mailer");
+const { sendTestEmail, isValidEmail } = require("../utils/email");
 
-function isValidEmail(value) {
-  if (typeof value !== "string") return false;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > 254) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
-}
-
-async function sendTestEmail(req, res) {
+async function sendTestEmailRoute(req, res) {
   const { to, subject, message } = req.body || {};
 
   if (!to || !isValidEmail(to)) {
@@ -17,28 +10,14 @@ async function sendTestEmail(req, res) {
     });
   }
 
-  const finalSubject = (subject || "Moc Nhien Authentic — Test Email").trim();
-  const userMessage = (message || "This is a test email from the Moc Nhien Authentic backend.").trim();
-
-  const html = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <h2 style="color: #6b4423; margin-bottom: 16px;">Moc Nhien Authentic</h2>
-      <p>${userMessage.replace(/\n/g, "<br>")}</p>
-      <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
-      <p style="font-size: 12px; color: #888;">
-        Sent at ${new Date().toISOString()} from the Moc Nhien Authentic backend.
-      </p>
-    </div>
-  `;
-
   try {
-    const result = await sendEmail(to, finalSubject, html);
+    const result = await sendTestEmail(to, subject, message);
     return res.status(200).json({
       success: true,
       message: "Test email sent successfully.",
-      messageId: result.messageId,
+      id: result.id,
       to,
-      subject: finalSubject,
+      subject: subject || "Moc Nhien Authentic — Test Email",
     });
   } catch (err) {
     return res.status(500).json({
@@ -49,25 +28,23 @@ async function sendTestEmail(req, res) {
   }
 }
 
-async function checkEmailConfig(req, res) {
-  const hasCreds = Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
-  if (!hasCreds) {
+async function checkEmailConfig(_req, res) {
+  if (!process.env.RESEND_API_KEY) {
     return res.status(503).json({
       success: false,
       configured: false,
-      message: "Email is not configured. Set EMAIL_USER and EMAIL_PASS in your .env file.",
+      message: "Email is not configured. Set RESEND_API_KEY in your environment.",
     });
   }
 
-  const ok = await verifyConnection();
-  return res.status(ok ? 200 : 503).json({
-    success: ok,
+  return res.status(200).json({
+    success: true,
     configured: true,
-    message: ok ? "SMTP connection is healthy." : "SMTP connection failed.",
+    message: "Resend is configured (RESEND_API_KEY present).",
   });
 }
 
 module.exports = {
-  sendTestEmail,
+  sendTestEmail: sendTestEmailRoute,
   checkEmailConfig,
 };

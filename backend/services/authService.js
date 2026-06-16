@@ -1,5 +1,5 @@
 const crypto = require("crypto");
-const { sendEmail } = require("../utils/mailer");
+const email = require("../utils/email");
 const { env } = require("../config/env");
 
 // REMOVED: OTP generation, OTP storage, OTP email, OTP verification helpers
@@ -19,8 +19,8 @@ function hashToken(token) {
 
 /** Build the absolute reset URL the user will click in the email. */
 function buildResetUrl(rawToken) {
-  const base = env.FRONTEND_BASE_URL || "http://localhost:3000";
-  return `${base.replace(/\/$/, "")}/reset-password?token=${rawToken}`;
+  const base = email.buildResetLink(rawToken);
+  return base;
 }
 
 /** Persist a fresh password-reset token on a user record. */
@@ -32,28 +32,10 @@ async function issuePasswordResetToken(user) {
   return { rawToken, expiresAt: user.passwordResetExpires };
 }
 
-/** Send the "Reset Password" email. */
-async function sendPasswordResetEmail(to, name, resetLink) {
-  const subject = "Reset Password";
-  const html = `
-    <div style="font-family: Arial, Helvetica, sans-serif; line-height: 1.6; color: #222; max-width: 600px; margin: 0 auto; padding: 24px;">
-      <h2 style="color: #6b4423; margin: 0 0 16px;">Reset your password</h2>
-      <p>Hi ${name || "there"},</p>
-      <p>We received a request to reset your password. Click the button below to choose a new one. This link expires in <strong>15 minutes</strong>.</p>
-      <p style="text-align: center; margin: 28px 0;">
-        <a href="${resetLink}"
-           style="background: #6b4423; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: 600; display: inline-block;">
-          Reset my password
-        </a>
-      </p>
-      <p>Or paste this link into your browser:</p>
-      <p style="word-break: break-all; color: #555;">${resetLink}</p>
-      <p style="font-size: 12px; color: #888; margin-top: 24px;">
-        If you didn't request this, you can safely ignore this email.
-      </p>
-    </div>
-  `;
-  return sendEmail(to, subject, html);
+/** Send the "Reset Password" email via Resend. */
+async function sendPasswordResetEmail(to, _name, resetLink) {
+  const token = new URL(resetLink).searchParams.get("token");
+  return email.sendResetEmail(to, token);
 }
 
 module.exports = {
