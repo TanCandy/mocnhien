@@ -1,31 +1,63 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { User, Mail, Phone, MapPin, Shield, Bell, LogOut, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { clearSession } from "../lib/auth";
+import { clearSession, getToken } from "../lib/auth";
 
 export default function Profile() {
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<{ name: string; email: string; role: string; phoneNumber?: string; primaryAddress?: string; createdAt: string } | null>(null);
-  const [error, setError] = useState("");
 
+  const [profile, setProfile] = useState<{ name: string; email: string; role: string; phoneNumber?: string; primaryAddress?: string; createdAt: string } | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string>("");
+
+  // Refs are stable across renders — they can NEVER cause useEffect to re-run.
+  const navigateRef = useRef(navigate);
   useEffect(() => {
-    let mounted = true;
-    (async () => {
+    navigateRef.current = navigate;
+  }, [navigate]);
+
+  // ✅ Runs exactly once on mount. No re-runs, no loop, no lag.
+  useEffect(() => {
+    const mounted = { current: true };
+
+    const fetchProfile = async () => {
+      const token = getToken();
+      if (!token) {
+        // No token → don't waste a request, just go to login.
+        clearSession();
+        if (mounted.current) {
+          setError("Not authenticated.");
+          setLoading(false);
+        }
+        navigateRef.current("/login", { replace: true });
+        return;
+      }
+
       try {
         const data = await api.get("/api/user/profile");
-        if (!mounted) return;
+        if (!mounted.current) return;
         setProfile(data.user);
+        setError("");
       } catch (err: any) {
-        if (!mounted) return;
-        setError(err.message || "Unauthorized");
-        navigate("/login", { replace: true });
+        if (!mounted.current) return;
+        console.error("[Profile] fetch failed:", err);
+        setError(err?.message || "Unauthorized");
+        // Token is invalid/expired — wipe it and bounce to login.
+        clearSession();
+        navigateRef.current("/login", { replace: true });
+      } finally {
+        // ✅ ALWAYS stop the spinner, success OR failure.
+        if (mounted.current) setLoading(false);
       }
-    })();
-    return () => {
-      mounted = false;
     };
-  }, [navigate]);
+
+    fetchProfile();
+
+    return () => {
+      mounted.current = false;
+    };
+  }, []); // ⚠️ IMPORTANT — empty array, run once on mount
 
   async function handleLogout() {
     try {
@@ -37,8 +69,21 @@ export default function Profile() {
     navigate("/login");
   }
 
+  // ✅ Show loading only once. If errored, show error + auto-redirect.
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto px-8 pb-24 pt-12 text-on-surface-variant">
+        Loading profile...
+      </div>
+    );
+  }
+
   if (!profile) {
-    return <div className="max-w-4xl mx-auto px-8 pb-24 pt-12 text-on-surface-variant">{error || "Loading profile..."}</div>;
+    return (
+      <div className="max-w-4xl mx-auto px-8 pb-24 pt-12 text-on-surface-variant">
+        {error || "No profile data."}
+      </div>
+    );
   }
 
   const memberYear = new Date(profile.createdAt).getFullYear();

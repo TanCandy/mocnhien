@@ -18,6 +18,7 @@ const env = {
   BCRYPT_SALT_ROUNDS: Number(process.env.BCRYPT_SALT_ROUNDS || 12),
   JWT_ISSUER: process.env.JWT_ISSUER || "moc-nhien-authentic",
   QUOTE_EXCHANGE_RATE_VND_PER_USD: Number(process.env.QUOTE_EXCHANGE_RATE_VND_PER_USD || 23000),
+  FRONTEND_BASE_URL: process.env.FRONTEND_BASE_URL || "http://localhost:3000",
 };
 
 module.exports = {
