@@ -2,8 +2,8 @@ const { Resend } = require("resend");
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
-const FROM_ADDRESS = process.env.RESEND_FROM || "Moc Nhien Authentic <onboarding@resend.dev>";
-const FROM_NAME_FALLBACK = process.env.RESEND_FROM_NAME || "Moc Nhien Authentic";
+const FROM_ADDRESS = process.env.RESEND_FROM || "Mộc Nhiên <noreply@mocnhien.online>";
+const FROM_NAME_FALLBACK = process.env.RESEND_FROM_NAME || "Mộc Nhiên";
 
 let resend = null;
 
