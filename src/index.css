@@ -64,3 +64,78 @@
     animation: fadeIn 0.2s ease-out forwards;
   }
 }
+
+/* ─── Scrollable table: top + bottom synced scrollbars ───────────────── */
+.table-scroll {
+  position: relative;
+  width: 100%;
+}
+
+/* Bottom (real) scroll container — native scroll, hidden scrollbar visuals */
+.table-scroll-body {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(121, 87, 65, 0.35) transparent;
+}
+
+.table-scroll-body::-webkit-scrollbar {
+  height: 8px;
+}
+.table-scroll-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.table-scroll-body::-webkit-scrollbar-thumb {
+  background-color: rgba(121, 87, 65, 0.35);
+  border-radius: 999px;
+}
+.table-scroll-body::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(121, 87, 65, 0.55);
+}
+
+/* Top (mirror) scrollbar — sits ABOVE the table header */
+.scroll-bar {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 12px;
+  margin-bottom: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(121, 87, 65, 0.45) rgba(121, 87, 65, 0.08);
+  border-radius: 999px;
+  background: rgba(121, 87, 65, 0.04);
+}
+
+.scroll-bar::-webkit-scrollbar {
+  height: 8px;
+}
+.scroll-bar::-webkit-scrollbar-track {
+  background: rgba(121, 87, 65, 0.06);
+  border-radius: 999px;
+}
+.scroll-bar::-webkit-scrollbar-thumb {
+  background-color: rgba(121, 87, 65, 0.45);
+  border-radius: 999px;
+}
+.scroll-bar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(121, 87, 65, 0.7);
+}
+
+/* Spacer inside the top scrollbar — its width defines the scroll range */
+.scroll-bar-inner {
+  height: 1px;
+  pointer-events: none;
+}
+
+/* Mobile: slightly thinner bars + extra tap-friendly space */
+@media (max-width: 640px) {
+  .scroll-bar {
+    height: 14px;
+    margin-bottom: 8px;
+  }
+  .table-scroll-body::-webkit-scrollbar {
+    height: 10px;
+  }
+}
+

@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { Loader2, PlusCircle, Pencil, X, Package, ExternalLink, CheckCircle, RefreshCw, Trash2 } from "lucide-react";
 import { SuccessModal } from "../components/Toast";
+import ScrollableTable from "../components/ScrollableTable";
 import { formatCurrencyInput, formatVND, formatUSD, parseUSD, ensureUrlProtocol } from "../lib/formatters";
 import { calculateVND, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
 import { getWarehouseAddress, computeOrderVND, getMongoOrderId, resolveContactDisplay } from "../lib/orderUtils";
@@ -616,7 +617,7 @@ export default function AdminOrders() {
         </div>
       ) : (
         <div className="bg-surface-container-low rounded-[20px] overflow-hidden">
-          <div className="overflow-x-auto">
+          <ScrollableTable minWidth={1100}>
             <table className="w-full">
               <thead>
                 <tr className="text-left bg-surface-container-high/50">
@@ -727,7 +728,7 @@ export default function AdminOrders() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollableTable>
         </div>
       )}
 
