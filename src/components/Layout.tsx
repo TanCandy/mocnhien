@@ -236,7 +236,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   0392 811 031
                 </a>
                 <a href="tel:0935196052" className="block text-stone-600 dark:text-stone-400 text-sm hover:text-primary transition-colors">
-                  0935 196 052
+                  0942946800
                 </a>
                 <a href="tel:0918170661" className="block text-stone-600 dark:text-stone-400 text-sm hover:text-primary transition-colors">
                   0918 170 661

@@ -4,9 +4,16 @@ import { useState } from "react";
 
 // Static paths for public folder images (served at root)
 const teamImages = [
-  "/photo_contact/527830072_122112464876945866_1316228756132488156_n.jpg",
+  "/photo_contact/new_member.jpg",
   "/photo_contact/528577866_122112464858945866_4566905921550425821_n.jpg",
   "/photo_contact/606285868_122149913474945866_8619557916705338608_n.jpg",
+];
+
+// Zalo contact numbers — one per team member, parallel to teamImages
+const zaloNumbers = [
+  "0942946800",
+  "0392811031",
+  "0918170661",
 ];
 
 // Promotional order images from history_order folder
@@ -55,7 +62,7 @@ export default function Home() {
             {/* Subtitle */}
             <div className="space-y-4">
               <p className="text-base md:text-xl lg:text-2xl font-semibold text-[#6B5744] text-center">
-                Mua hộ & vận chuyển Mỹ - Nhật - Anh - Úc
+                Mua hộ & vận chuyển Mỹ - Nhật - Anh - Úc - Hàn
               </p>
 
               {/* Marketing Text */}
@@ -351,7 +358,7 @@ export default function Home() {
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                           <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.05-.2-.06-.06-.14-.04-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/>
                         </svg>
-                        Zalo: 0901 234 567
+                        Zalo: {zaloNumbers[idx]}
                       </p>
                     </div>
                   </div>
