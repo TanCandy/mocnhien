@@ -1,0 +1,78 @@
+# Docker Compose for local production-like runs.
+# Usage:
+#   1. Create a .env file (NOT committed) with: JWT_SECRET=...
+#   2. docker compose up --build
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Override at build time if your API is hosted elsewhere
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+    image: moc-nhien-authentic:latest
+    container_name: moc-nhien-app
+    restart: unless-stopped
+    ports:
+      # Host:Container — change host port if 3000 is taken
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      MONGODB_URI: ${MONGODB_URI:?MONGODB_URI must be set (e.g. mongodb://mongo:27017/moc-nhien)}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      JWT_ISSUER: ${JWT_ISSUER:-moc-nhien-authentic}
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      QUOTE_EXCHANGE_RATE_VND_PER_USD: ${QUOTE_EXCHANGE_RATE_VND_PER_USD:-23000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL:-http://localhost:3000}
+      EMAIL_USER: ${EMAIL_USER:-}
+      EMAIL_PASS: ${EMAIL_PASS:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - moc-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  mongo:
+    image: mongo:7
+    container_name: moc-nhien-mongo
+    restart: unless-stopped
+    ports:
+      # Exposed only to host for debugging tools (e.g. Compass).
+      # App reaches mongo over the internal network.
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-moc-nhien}
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - moc-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  mongo_data:
+    name: moc-nhien-mongo-data
+
+networks:
+  moc-network:
+    name: moc-network
+    driver: bridge

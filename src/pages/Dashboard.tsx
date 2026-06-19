@@ -380,7 +380,7 @@ export default function Dashboard() {
                   TP.HCM - Hiếu: 0392 811 031
                 </a>
                 <a className="block font-medium text-sm" href="tel:0935196052">
-                  TP.HCM - Quyên: 0942946800
+                  TP.HCM - Bảo Trân: 0942946800
                 </a>
                 <a className="block font-medium text-sm" href="tel:0918170661">
                   TP. Hà Nội - Thu Quyên: 0918 170 661

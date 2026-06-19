@@ -1,0 +1,51 @@
+# Dependencies (re-installed inside the image)
+node_modules/
+**/node_modules/
+
+# Build output (re-built inside the image)
+dist/
+build/
+
+# Secrets and local config — never bake into the image
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.cursor/
+
+# Test / coverage
+coverage/
+*.test.*
+*.spec.*
+__tests__/
+
+# Docker self-references
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Documentation
+README.md
+*.md
+
+# Agent / metadata folders
+.agents/
+metadata.json
