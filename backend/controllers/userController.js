@@ -56,6 +56,34 @@ async function updateUser(req, res) {
   return res.status(200).json({ user });
 }
 
+async function updateProfile(req, res) {
+  const userId = req.user._id;
+  const { email, phoneNumber, primaryAddress } = req.body || {};
+
+  if (!email && !phoneNumber && !primaryAddress) {
+    return res.status(400).json({ message: "At least one field must be provided." });
+  }
+
+  const patch = {};
+  if (email !== undefined) {
+    const normalized = String(email).toLowerCase().trim();
+    if (!normalized) return res.status(400).json({ message: "Email cannot be empty." });
+    const existing = await User.findOne({ email: normalized, _id: { $ne: userId } }).lean();
+    if (existing) return res.status(409).json({ message: "Email is already in use." });
+    patch.email = normalized;
+  }
+  if (phoneNumber !== undefined) patch.phoneNumber = String(phoneNumber).trim();
+  if (primaryAddress !== undefined) patch.primaryAddress = String(primaryAddress).trim();
+
+  const updatedUser = await User.findByIdAndUpdate(userId, patch, { new: true, runValidators: true })
+    .select("_id name email role phoneNumber primaryAddress createdAt")
+    .lean();
+
+  if (!updatedUser) return res.status(404).json({ message: "User not found." });
+
+  return res.status(200).json({ user: updatedUser });
+}
+
 async function deleteUser(req, res) {
   const { id } = req.params;
   const user = await User.findByIdAndDelete(id).lean();
@@ -68,6 +96,7 @@ module.exports = {
   listUsers,
   createUser,
   updateUser,
+  updateProfile,
   deleteUser,
 };
 

@@ -380,7 +380,7 @@ export default function Dashboard() {
                   TP.HCM - Hiếu: 0392 811 031
                 </a>
                 <a className="block font-medium text-sm" href="tel:0935196052">
-                  TP.HCM - Bảo Trân: 0942946800
+                  TP.HCM - Bảo Trân  : 0942946800
                 </a>
                 <a className="block font-medium text-sm" href="tel:0918170661">
                   TP. Hà Nội - Thu Quyên: 0918 170 661
@@ -426,7 +426,7 @@ export default function Dashboard() {
                   <option value="Health">Health & Supplements</option>
                   <option value="Books">Books & Stationery</option>
                   <option value="Toys">Toys & Games</option>
-                  <option value="Sports">Sports & Outdoors</option>
+                  <option value="Sports">Sport & Outdoors</option>
                   <option value="Other">Other</option>
                 </select>
               </div>

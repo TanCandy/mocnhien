@@ -1,15 +1,33 @@
 import { useEffect, useRef, useState } from "react";
-import { User, Mail, Phone, MapPin, Shield, Bell, LogOut, ChevronRight } from "lucide-react";
+import { User, Mail, Phone, MapPin, Shield, Bell, LogOut, ChevronRight, Loader2, Save, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { clearSession, getToken } from "../lib/auth";
+import { SuccessModal } from "../components/Toast";
+
+interface ProfileData {
+  _id: string;
+  name: string;
+  email: string;
+  role: string;
+  phoneNumber?: string;
+  primaryAddress?: string;
+  createdAt: string;
+}
 
 export default function Profile() {
   const navigate = useNavigate();
 
-  const [profile, setProfile] = useState<{ name: string; email: string; role: string; phoneNumber?: string; primaryAddress?: string; createdAt: string } | null>(null);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
+
+  // Edit form state
+  const [isEditing, setIsEditing] = useState(false);
+  const [formData, setFormData] = useState({ email: "", phoneNumber: "", primaryAddress: "" });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [successData, setSuccessData] = useState<{ title: string; message: string } | null>(null);
 
   // Refs are stable across renders — they can NEVER cause useEffect to re-run.
   const navigateRef = useRef(navigate);
@@ -17,14 +35,13 @@ export default function Profile() {
     navigateRef.current = navigate;
   }, [navigate]);
 
-  // ✅ Runs exactly once on mount. No re-runs, no loop, no lag.
+  // Fetch user profile from backend
   useEffect(() => {
     const mounted = { current: true };
 
     const fetchProfile = async () => {
       const token = getToken();
       if (!token) {
-        // No token → don't waste a request, just go to login.
         clearSession();
         if (mounted.current) {
           setError("Not authenticated.");
@@ -38,16 +55,19 @@ export default function Profile() {
         const data = await api.get("/api/user/profile");
         if (!mounted.current) return;
         setProfile(data.user);
+        setFormData({
+          email: data.user.email || "",
+          phoneNumber: data.user.phoneNumber || "",
+          primaryAddress: data.user.primaryAddress || "",
+        });
         setError("");
       } catch (err: any) {
         if (!mounted.current) return;
         console.error("[Profile] fetch failed:", err);
         setError(err?.message || "Unauthorized");
-        // Token is invalid/expired — wipe it and bounce to login.
         clearSession();
         navigateRef.current("/login", { replace: true });
       } finally {
-        // ✅ ALWAYS stop the spinner, success OR failure.
         if (mounted.current) setLoading(false);
       }
     };
@@ -57,7 +77,67 @@ export default function Profile() {
     return () => {
       mounted.current = false;
     };
-  }, []); // ⚠️ IMPORTANT — empty array, run once on mount
+  }, []);
+
+  function startEditing() {
+    if (!profile) return;
+    setFormData({
+      email: profile.email || "",
+      phoneNumber: profile.phoneNumber || "",
+      primaryAddress: profile.primaryAddress || "",
+    });
+    setSaveError("");
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    if (!profile) return;
+    setFormData({
+      email: profile.email || "",
+      phoneNumber: profile.phoneNumber || "",
+      primaryAddress: profile.primaryAddress || "",
+    });
+    setSaveError("");
+    setIsEditing(false);
+  }
+
+  async function handleSave() {
+    if (!profile) return;
+
+    // Basic client-side validation
+    if (!formData.email.trim()) {
+      setSaveError("Email address is required.");
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(formData.email.trim())) {
+      setSaveError("Please enter a valid email address.");
+      return;
+    }
+
+    setSaveError("");
+    setIsSaving(true);
+
+    try {
+      const updated = await api.put("/api/user/profile", {
+        email: formData.email.trim(),
+        phoneNumber: formData.phoneNumber.trim(),
+        primaryAddress: formData.primaryAddress.trim(),
+      });
+
+      setProfile(updated.user);
+      setIsEditing(false);
+      setSuccessData({
+        title: "Profile Updated",
+        message: "Your profile details have been saved successfully.",
+      });
+    } catch (err: any) {
+      console.error("[Profile] save failed:", err);
+      setSaveError(err?.message || "Failed to save profile. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   async function handleLogout() {
     try {
@@ -69,7 +149,6 @@ export default function Profile() {
     navigate("/login");
   }
 
-  // ✅ Show loading only once. If errored, show error + auto-redirect.
   if (loading) {
     return (
       <div className="max-w-4xl mx-auto px-8 pb-24 pt-12 text-on-surface-variant">
@@ -90,6 +169,14 @@ export default function Profile() {
 
   return (
     <div className="max-w-4xl mx-auto px-8 pb-24">
+      {successData && (
+        <SuccessModal
+          title={successData.title}
+          message={successData.message}
+          onClose={() => setSuccessData(null)}
+        />
+      )}
+
       <section className="flex flex-col md:flex-row items-center gap-8 py-12 border-b border-outline-variant/20">
         <div className="relative">
           <div className="w-32 h-32 rounded-full bg-primary-container/20 flex items-center justify-center border-4 border-white shadow-xl">
@@ -112,33 +199,116 @@ export default function Profile() {
       <div className="grid md:grid-cols-2 gap-12 py-12">
         <section className="space-y-8">
           <h2 className="text-2xl font-headline text-primary">Personal Information</h2>
-          <div className="space-y-6">
-            <div className="flex items-center gap-4">
-              <Mail className="text-primary w-5 h-5" />
-              <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-outline">Email Address</p>
-                <p className="font-medium">{profile.email}</p>
+
+          {isEditing ? (
+            /* ── Edit Mode ── */
+            <div className="space-y-5">
+              {/* Email */}
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-outline flex items-center gap-1">
+                  <Mail className="w-3 h-3" /> Email Address
+                </label>
+                <input
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className="w-full bg-surface-container-low rounded-2xl px-5 py-3 text-on-surface border border-outline/30 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+                />
+              </div>
+
+              {/* Phone */}
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-outline flex items-center gap-1">
+                  <Phone className="w-3 h-3" /> Phone Number
+                </label>
+                <input
+                  type="tel"
+                  value={formData.phoneNumber}
+                  onChange={(e) => setFormData({ ...formData, phoneNumber: e.target.value })}
+                  placeholder="Enter your phone number"
+                  className="w-full bg-surface-container-low rounded-2xl px-5 py-3 text-on-surface border border-outline/30 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all placeholder:text-outline/50"
+                />
+              </div>
+
+              {/* Address */}
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-outline flex items-center gap-1">
+                  <MapPin className="w-3 h-3" /> Primary Address
+                </label>
+                <input
+                  type="text"
+                  value={formData.primaryAddress}
+                  onChange={(e) => setFormData({ ...formData, primaryAddress: e.target.value })}
+                  placeholder="Enter your address"
+                  className="w-full bg-surface-container-low rounded-2xl px-5 py-3 text-on-surface border border-outline/30 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all placeholder:text-outline/50"
+                />
+              </div>
+
+              {/* Error message */}
+              {saveError && (
+                <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-2">
+                  {saveError}
+                </p>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="flex-1 bg-primary text-on-primary py-3 rounded-full font-bold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isSaving ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  {isSaving ? "Saving..." : "Save Changes"}
+                </button>
+                <button
+                  onClick={cancelEditing}
+                  disabled={isSaving}
+                  className="px-5 py-3 rounded-full font-bold border border-outline/30 text-on-surface-variant hover:bg-surface-container-high transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <X className="w-4 h-4" />
+                  Cancel
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <Phone className="text-primary w-5 h-5" />
-              <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-outline">Phone Number</p>
-                <p className="font-medium">{profile.phoneNumber || "Not provided"}</p>
+          ) : (
+            /* ── View Mode ── */
+            <div className="space-y-6">
+              <div className="flex items-center gap-4">
+                <Mail className="text-primary w-5 h-5" />
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-outline">Email Address</p>
+                  <p className="font-medium">{profile.email}</p>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <MapPin className="text-primary w-5 h-5" />
-              <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-outline">Primary Address</p>
-                <p className="font-medium">{profile.primaryAddress || "Not provided"}</p>
+              <div className="flex items-center gap-4">
+                <Phone className="text-primary w-5 h-5" />
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-outline">Phone Number</p>
+                  <p className="font-medium">{profile.phoneNumber || "Not provided"}</p>
+                </div>
               </div>
+              <div className="flex items-center gap-4">
+                <MapPin className="text-primary w-5 h-5" />
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-outline">Primary Address</p>
+                  <p className="font-medium">{profile.primaryAddress || "Not provided"}</p>
+                </div>
+              </div>
+
+              <button
+                onClick={startEditing}
+                className="text-primary font-bold text-sm hover:underline flex items-center gap-2 mt-2"
+              >
+                Edit Profile Details
+                <ChevronRight className="w-4 h-4" />
+              </button>
             </div>
-          </div>
-          <button className="text-primary font-bold text-sm hover:underline flex items-center gap-2">
-            Edit Profile Details
-            <ChevronRight className="w-4 h-4" />
-          </button>
+          )}
         </section>
 
         <section className="space-y-8">

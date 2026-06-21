@@ -6,6 +6,7 @@ const userController = require("../controllers/userController");
 const router = express.Router();
 
 router.get("/profile", authMiddleware, userController.getProfile);
+router.put("/profile", authMiddleware, userController.updateProfile);
 
 router.get("/", authMiddleware, roleMiddleware("admin"), userController.listUsers);
 router.post("/", authMiddleware, roleMiddleware("admin"), userController.createUser);
