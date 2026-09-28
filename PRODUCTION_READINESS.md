@@ -216,7 +216,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
     Confirm the container orchestrator (Docker `restart: unless-stopped` in `docker-compose.yml`, or Railway's restart policy) will restart the process after exit.
   - **How to verify:** Force an uncaught exception in a local/staging run — process exits with code 1, orchestrator restarts it, `/health` recovers.
 
-- [ ] **P1-5: No DB connection retry/backoff**
+- [x] **P1-5: No DB connection retry/backoff**
   - **Problem:** `backend/config/db.js`'s `connectDB` makes one attempt; `backend/server.js`'s `connectDatabase()` catches failure and just logs, never retries.
   - **Files to touch:** `backend/config/db.js` or `backend/server.js`.
   - **Exact change:** Wrap the `connectDB` call in a retry loop (e.g., 5 attempts, exponential backoff starting at 1s) before giving up and logging a final failure.
