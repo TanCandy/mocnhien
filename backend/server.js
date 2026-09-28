@@ -27,14 +27,18 @@ const { errorHandler } = require("./middleware/errorHandler");
 const app = express();
 
 // ====================
-// CORS — explicit allowlist only, no wildcard fallback
+// CORS — explicit allowlist only, no wildcard fallback.
+// Scoped to /api: static assets (built with `crossorigin` script/link tags)
+// send an Origin header even for same-origin requests, and this app's own
+// serving origin is never in ALLOWED_ORIGINS — applying CORS globally would
+// reject its own JS/CSS bundle with a CORS error.
 // ====================
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(cors({
+app.use("/api", cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
