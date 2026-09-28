@@ -222,7 +222,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
   - **Exact change:** Wrap the `connectDB` call in a retry loop (e.g., 5 attempts, exponential backoff starting at 1s) before giving up and logging a final failure.
   - **How to verify:** Start the server with Mongo temporarily unreachable, then make it reachable mid-backoff — server connects successfully without a manual restart.
 
-- [ ] **P1-6: Zero automated test coverage**
+- [x] **P1-6: Zero automated test coverage**
   - **Problem:** No `*.test.*`/`*.spec.*` files, no test framework in either `package.json`.
   - **Files to touch:** root `package.json` (Vitest for frontend), `backend/package.json` (Vitest or Jest + Supertest + `mongodb-memory-server` for backend), new `*.test.*` files alongside the code they cover.
   - **Exact change:** Add Vitest to the frontend; add Vitest/Jest + `supertest` + `mongodb-memory-server` (already proven to work in this repo) to the backend. Prioritize coverage for: auth flows (register/login/forgot/reset), order validation branches in `adminCreateOrder`/`adminUpdateOrder` (the exact logic already fixed once on the frontend side — lock it in with a backend test), and `roleMiddleware`/`authMiddleware`. Do not aim for 100% coverage — target the highest-risk paths first.
