@@ -1,13 +1,16 @@
 const crypto = require("crypto");
 const mongoose = require("mongoose");
+const { env } = require("../config/env");
 const { calculateQuote } = require("../utils/quoteCalculator");
 const Order = require("../models/Order");
 const { parseUSD, formatVND, formatUSD } = require("../services/exchangeRateService");
 
-const WEBHOOK_URL =
-  "https://script.google.com/macros/s/AKfycbypPB4voV6Ko1QAUKmsanqnBTnGQs_9yNeidZ1MqiMm94EVCzpNrJkSnHzOXVjiGGao/exec";
-
 async function syncOrderToGoogleSheets(order) {
+  if (!env.WEBHOOK_URL) {
+    console.warn("[SheetsWebhook] WEBHOOK_URL not set — skipping sync.");
+    return;
+  }
+
   // CRITICAL: orderCode MUST exist — skip sync (not throw) so DB write is never blocked
   if (!order.orderCode) {
     console.error("❌ Missing orderCode, skipping sync. Order:", JSON.stringify(order));
@@ -48,7 +51,7 @@ async function syncOrderToGoogleSheets(order) {
   );
 
   try {
-    const res = await fetch(WEBHOOK_URL, {
+    const res = await fetch(env.WEBHOOK_URL, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify(payload),
@@ -1051,23 +1054,27 @@ async function deleteOrder(req, res) {
     }
 
     // Sync to Google Sheets — tell the sheet to delete the row
-    try {
-      const webhookPayload = {
-        action: "delete",
-        orderCode: order.orderCode || "",
-        orderId: order._id ? String(order._id) : "",
-      };
-      console.log("DELETE:", webhookPayload.orderCode);
-      const sheetRes = await fetch(WEBHOOK_URL, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(webhookPayload),
-      });
-      const text = await sheetRes.text();
-      console.log(`[DeleteOrder] Sheets response: ${sheetRes.status}  ${text}`);
-    } catch (sheetErr) {
-      // Sheet errors are logged but must not block DB deletion
-      console.error("[DeleteOrder] Sheets sync error:", sheetErr.message);
+    if (!env.WEBHOOK_URL) {
+      console.warn("[DeleteOrder] WEBHOOK_URL not set — skipping sheet delete sync.");
+    } else {
+      try {
+        const webhookPayload = {
+          action: "delete",
+          orderCode: order.orderCode || "",
+          orderId: order._id ? String(order._id) : "",
+        };
+        console.log("DELETE:", webhookPayload.orderCode);
+        const sheetRes = await fetch(env.WEBHOOK_URL, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify(webhookPayload),
+        });
+        const text = await sheetRes.text();
+        console.log(`[DeleteOrder] Sheets response: ${sheetRes.status}  ${text}`);
+      } catch (sheetErr) {
+        // Sheet errors are logged but must not block DB deletion
+        console.error("[DeleteOrder] Sheets sync error:", sheetErr.message);
+      }
     }
 
     // Delete from database
