@@ -228,7 +228,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
   - **Exact change:** Add Vitest to the frontend; add Vitest/Jest + `supertest` + `mongodb-memory-server` (already proven to work in this repo) to the backend. Prioritize coverage for: auth flows (register/login/forgot/reset), order validation branches in `adminCreateOrder`/`adminUpdateOrder` (the exact logic already fixed once on the frontend side — lock it in with a backend test), and `roleMiddleware`/`authMiddleware`. Do not aim for 100% coverage — target the highest-risk paths first.
   - **How to verify:** `npm test` (root and `backend/`) runs and passes locally and in CI once P1-7 lands.
 
-- [ ] **P1-7: No CI**
+- [x] **P1-7: No CI**
   - **Problem:** No `.github/workflows` directory; no automated checks run on push/PR.
   - **Files to touch:** new `.github/workflows/ci.yml`.
   - **Exact change:** Add a workflow that on every push/PR to `main` runs: `npm run lint` (root `tsc --noEmit`), `npm audit --audit-level=high` (root and `backend/`), `npm test` (once P1-6 lands), and `docker build .` to catch Dockerfile breakage.
