@@ -449,6 +449,7 @@ async function adminCreateOrder(req, res) {
   const finalProductName = productName || product_name;
   const finalWarehouse = warehouseAddress ? String(warehouseAddress).trim() : "";
   const finalStaffName = staffName ? String(staffName).trim() : "";
+  const userEmail = req.user.email.toLowerCase();
 
   if (!finalProductName) {
     return res.status(400).json({ message: "productName is required." });
