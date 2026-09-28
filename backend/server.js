@@ -3,6 +3,7 @@ console.log("Starting server...");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
 const dotenv = require("dotenv");
 const mongoose = require("mongoose");
@@ -25,6 +26,34 @@ const apiRoutes = require("./routes");
 const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
+
+// ====================
+// SECURITY HEADERS — helmet with a CSP matching this app's actual sources
+// (Vite build output loaded from dist/, Google Fonts stylesheet, Google
+// profile-photo images, same-origin XHR/fetch to this API).
+// ====================
+app.use(helmet({
+  // TLS is terminated at the hosting platform's proxy, not in this process —
+  // an HSTS header from here would wrongly pin plain-http deployments/local
+  // testing to https-only and break asset loading.
+  hsts: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https://lh3.googleusercontent.com"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'self'"],
+      // Don't force https upgrades — TLS termination happens at the host
+      // platform's proxy (or not at all in local/dev), not in this app.
+      upgradeInsecureRequests: null,
+    },
+  },
+}));
 
 // ====================
 // CORS — explicit allowlist only, no wildcard fallback.
