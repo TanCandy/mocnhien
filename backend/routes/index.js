@@ -2,6 +2,8 @@ const express = require("express");
 
 const authController = require("../controllers/authController");
 const { authRateLimiter } = require("../middleware/rateLimiter");
+const { validate } = require("../middleware/validate");
+const { forgotPasswordSchema, resetPasswordSchema } = require("../validation/schemas");
 const authRoutes = require("./authRoutes");
 const meRoutes = require("./meRoutes");
 const orderRoutes = require("./orderRoutes");
@@ -21,8 +23,8 @@ router.use("/user", userRoutes);
 router.use("/", emailRoutes);
 
 // Direct paths (bypass /auth prefix) — matches what the frontend calls
-router.post("/forgot-password", authRateLimiter, authController.forgotPassword);
-router.post("/reset-password", authRateLimiter, authController.resetPassword);
+router.post("/forgot-password", authRateLimiter, validate(forgotPasswordSchema), authController.forgotPassword);
+router.post("/reset-password", authRateLimiter, validate(resetPasswordSchema), authController.resetPassword);
 
 // 404 handler for unmatched /api/* routes
 router.use((req, res) => {

@@ -744,11 +744,14 @@ async function adminUpdateOrder(req, res) {
       updateData.status = normalizedStatus;
     }
 
-    // ── 6. Strip mongo-only fields ─────────────────────────────────────────
+    // ── 6. Strip mongo-only / non-editable fields ───────────────────────────
+    //    `user` (order ownership) must never be reassignable from this
+    //    generic update payload — it's not a field the admin edit form sends.
     delete updateData._id;
     delete updateData.__v;
     delete updateData.createdAt;
     delete updateData.updatedAt;
+    delete updateData.user;
 
     console.log("[AdminUpdateOrder] Final updateData:", JSON.stringify(updateData, null, 2));
 
