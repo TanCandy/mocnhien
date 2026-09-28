@@ -185,13 +185,13 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
 
 ## P1 — Should fix before/soon after go-live
 
-- [ ] **P1-1: No input validation layer**
+- [x] **P1-1: No input validation layer**
   - **Problem:** No `zod`/`joi`/`express-validator` in either `package.json`. Validation is ad hoc inline logic scattered through controllers (e.g., `backend/controllers/authController.js`, `backend/controllers/orderController.js`). This also widens the practical exposure of the mongoose prototype-pollution CVE (P0-4) since unvalidated keys can reach `.update()` calls.
   - **Files to touch:** `backend/package.json`, new `backend/validation/` directory, `backend/controllers/authController.js`, `backend/controllers/orderController.js`.
   - **Exact change:** `cd backend && npm install zod`. Add schemas for: register (`name`, `email`, `password`, `phoneNumber`, `primaryAddress` — match `backend/models/User.js` required fields), login (`email`, `password`), `adminCreateOrder`/`adminUpdateOrder` (whitelist exactly the fields in `backend/models/Order.js`), and quote requests. Validate at the top of each controller function; return 400 with the validation error message on failure, matching the existing error response shape used elsewhere (see `backend/middleware/errorHandler.js`'s `{ message }` shape).
   - **How to verify:** Submitting a register/login/order request missing a required field or with an unexpected extra field (e.g., `__proto__` or `constructor.prototype` keys) returns 400, not a 500 or silent acceptance. Valid requests behave exactly as before.
 
-- [ ] **P1-2: PII in plaintext logs**
+- [x] **P1-2: PII in plaintext logs**
   - **Problem:** `backend/controllers/orderController.js` has multiple `console.log(JSON.stringify(order))`-style calls dumping full order objects (customer name, contact info, addresses) to stdout with no redaction, no log levels, no structure.
   - **Files to touch:** `backend/package.json`, `backend/controllers/orderController.js`, `backend/server.js`.
   - **Exact change:** `cd backend && npm install pino pino-http`. Replace `console.log`/`console.error`/`console.warn` calls in `orderController.js` (and ideally `server.js`) with a shared `logger` instance. Remove full-object dumps; log only IDs/status transitions (e.g., `logger.info({ orderId, status }, "order status updated")`), never full customer PII.
