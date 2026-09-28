@@ -63,7 +63,7 @@ export default function Tracking() {
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Close dropdown on outside click
   useEffect(() => {

@@ -53,7 +53,6 @@ interface Order {
   paymentStatus?: string;
   paymentPercent?: number;
   paidAmount?: number;
-  totalVND?: number;
   userId?: string;
   origin?: string;
   destination?: string;
@@ -458,7 +457,8 @@ export default function AdminOrders() {
       }
 
       const rate = parseExchangeRate(formData.exchangeRate);
-      if (!editingOrder && (!rate || rate <= 0)) {
+      const hasPriceUSD = parseUSD(formData.priceUSD) > 0;
+      if (!editingOrder && hasPriceUSD && (!rate || rate <= 0)) {
         setFormError("Exchange rate must be greater than 0");
         setFormLoading(false);
         return;
@@ -1000,7 +1000,7 @@ export default function AdminOrders() {
                     }`}
                     value={formData.paymentStatus}
                     disabled={formData.status === "pending"}
-                    onChange={(e) => setFormData({ ...prev, paymentStatus: e.target.value })}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, paymentStatus: e.target.value }))}
                   >
                     <option value="pending">Pending</option>
                     <option value="paid">Paid</option>
