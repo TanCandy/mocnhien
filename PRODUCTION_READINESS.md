@@ -197,7 +197,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
   - **Exact change:** `cd backend && npm install pino pino-http`. Replace `console.log`/`console.error`/`console.warn` calls in `orderController.js` (and ideally `server.js`) with a shared `logger` instance. Remove full-object dumps; log only IDs/status transitions (e.g., `logger.info({ orderId, status }, "order status updated")`), never full customer PII.
   - **How to verify:** Trigger an order create/update/approve flow and confirm logs contain structured JSON lines with order IDs and status but no full customer name/contact/address blobs.
 
-- [ ] **P1-3: No error tracking**
+- [x] **P1-3: No error tracking**
   - **Problem:** No Sentry (or equivalent) integration. Prod errors are only visible by manually reading container logs.
   - **Files to touch:** `backend/package.json`, `backend/server.js`, `backend/middleware/errorHandler.js`.
   - **Exact change:** Add `@sentry/node`, initialize it early in `server.js` guarded by a `SENTRY_DSN` env var (no-op if unset), and capture exceptions in `errorHandler.js` before responding. Add `SENTRY_DSN=` to `backend/.env.example`.
