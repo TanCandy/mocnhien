@@ -203,7 +203,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
   - **Exact change:** Add `@sentry/node`, initialize it early in `server.js` guarded by a `SENTRY_DSN` env var (no-op if unset), and capture exceptions in `errorHandler.js` before responding. Add `SENTRY_DSN=` to `backend/.env.example`.
   - **How to verify:** Trigger a deliberate error locally with `SENTRY_DSN` set to a test project — confirm it appears in Sentry. With `SENTRY_DSN` unset, server behaves exactly as before (no crash, no-op).
 
-- [ ] **P1-4: Process doesn't exit on fatal errors**
+- [x] **P1-4: Process doesn't exit on fatal errors**
   - **Problem:** `backend/server.js` (lines ~135-141) only logs on `unhandledRejection`/`uncaughtException` and keeps running in a potentially corrupted state.
   - **Files to touch:** `backend/server.js`, `docker-compose.yml` / deploy config (confirm restart policy).
   - **Exact change:**
