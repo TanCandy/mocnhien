@@ -92,13 +92,11 @@ app.use(errorHandler);
 // ====================
 const PORT = process.env.PORT || 3000;
 
-// Warn about missing required env vars (but don't block startup)
+// Warn about missing optional env vars (but don't block startup).
+// JWT_SECRET is enforced at require-time via required("JWT_SECRET") in
+// config/env.js — the process will not reach this point without it.
 if (!process.env.MONGODB_URI) {
   console.warn("WARNING: MONGODB_URI not set — database features will be unavailable");
-}
-if (!process.env.JWT_SECRET) {
-  console.warn("WARNING: JWT_SECRET not set — using fallback (INSECURE in production)");
-  if (!process.env.JWT_SECRET) process.env.JWT_SECRET = "dev-only-insecure-fallback-secret";
 }
 
 async function connectDatabase() {
