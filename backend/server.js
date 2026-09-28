@@ -146,18 +146,35 @@ if (!process.env.MONGODB_URI) {
   console.warn("WARNING: MONGODB_URI not set — database features will be unavailable");
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const DB_CONNECT_MAX_ATTEMPTS = 5;
+const DB_CONNECT_BASE_DELAY_MS = 1000;
+
 async function connectDatabase() {
   if (!process.env.MONGODB_URI) {
     console.warn("Skipping DB connection — MONGODB_URI not set");
     return;
   }
-  try {
-    console.log("Connecting to MongoDB...");
-    await connectDB(process.env.MONGODB_URI);
-    console.log("MongoDB connected successfully");
-  } catch (err) {
-    console.error("MongoDB connection failed:", err.message);
-    console.warn("Server will continue running without database connection");
+
+  for (let attempt = 1; attempt <= DB_CONNECT_MAX_ATTEMPTS; attempt++) {
+    try {
+      console.log(`Connecting to MongoDB (attempt ${attempt}/${DB_CONNECT_MAX_ATTEMPTS})...`);
+      await connectDB(process.env.MONGODB_URI);
+      console.log("MongoDB connected successfully");
+      return;
+    } catch (err) {
+      const isLastAttempt = attempt === DB_CONNECT_MAX_ATTEMPTS;
+      logger.error({ err: err.message, attempt }, "MongoDB connection attempt failed");
+      if (isLastAttempt) {
+        logger.error("MongoDB connection failed after all retries — server will continue running without a database connection");
+        return;
+      }
+      const delay = DB_CONNECT_BASE_DELAY_MS * 2 ** (attempt - 1);
+      await sleep(delay);
+    }
   }
 }
 
