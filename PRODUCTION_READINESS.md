@@ -234,7 +234,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
   - **Exact change:** Add a workflow that on every push/PR to `main` runs: `npm run lint` (root `tsc --noEmit`), `npm audit --audit-level=high` (root and `backend/`), `npm test` (once P1-6 lands), and `docker build .` to catch Dockerfile breakage.
   - **How to verify:** Open a PR and confirm the workflow runs and reports status; break something intentionally (e.g., a type error) and confirm CI fails.
 
-- [ ] **P1-8: Frontend/backend admin role-gating UX mismatch**
+- [x] **P1-8: Frontend/backend admin role-gating UX mismatch**
   - **Problem:** `src/components/AdminRoute.tsx` decodes `role` from the JWT client-side for nav-gating; `src/context/UserContext.tsx` fetches the live role from `/api/user/profile`. A just-promoted/demoted user can see stale nav behavior until re-login. (Backend authorization itself is not affected — `authMiddleware.js` always re-checks the live DB role.)
   - **Files to touch:** `src/components/AdminRoute.tsx`, `src/context/UserContext.tsx`.
   - **Exact change:** Have `AdminRoute.tsx` read `role` from `UserContext` (calling/awaiting `refreshUser()` if needed) instead of decoding the JWT directly.
