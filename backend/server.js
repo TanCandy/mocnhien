@@ -26,24 +26,19 @@ const { errorHandler } = require("./middleware/errorHandler");
 const app = express();
 
 // ====================
-// CORS — Railway & local dev
+// CORS — explicit allowlist only, no wildcard fallback
 // ====================
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:5173",
-  process.env.FRONTEND_URL,
-  process.env.PUBLIC_FRONTEND_URL,
-].filter(Boolean);
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all — restrict via Railway firewall if needed
+      return callback(null, true);
     }
+    return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
