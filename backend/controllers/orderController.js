@@ -1,19 +1,20 @@
 const crypto = require("crypto");
 const mongoose = require("mongoose");
 const { env } = require("../config/env");
+const { logger } = require("../config/logger");
 const { calculateQuote } = require("../utils/quoteCalculator");
 const Order = require("../models/Order");
 const { parseUSD, formatVND, formatUSD } = require("../services/exchangeRateService");
 
 async function syncOrderToGoogleSheets(order) {
   if (!env.WEBHOOK_URL) {
-    console.warn("[SheetsWebhook] WEBHOOK_URL not set — skipping sync.");
+    logger.warn("[SheetsWebhook] WEBHOOK_URL not set — skipping sync.");
     return;
   }
 
   // CRITICAL: orderCode MUST exist — skip sync (not throw) so DB write is never blocked
   if (!order.orderCode) {
-    console.error("❌ Missing orderCode, skipping sync. Order:", JSON.stringify(order));
+    logger.error({ orderId: order._id ? String(order._id) : "" }, "[SheetsWebhook] Missing orderCode, skipping sync.");
     return;
   }
 
@@ -41,13 +42,15 @@ async function syncOrderToGoogleSheets(order) {
     updatedAt:       order.updatedAt ? new Date(order.updatedAt).toISOString() : "",
   };
 
-  console.log(
-    "Sending order:",
-    payload.orderCode,
-    "paidAmount=" + payload.paidAmount,
-    "remainingAmount=" + payload.remainingAmount,
-    "paymentPercent=" + payload.paymentPercentage,
-    "vnd=" + payload.vnd
+  logger.info(
+    {
+      orderCode: payload.orderCode,
+      paidAmount: payload.paidAmount,
+      remainingAmount: payload.remainingAmount,
+      paymentPercent: payload.paymentPercentage,
+      vnd: payload.vnd,
+    },
+    "[SheetsWebhook] Sending order"
   );
 
   try {
@@ -56,10 +59,10 @@ async function syncOrderToGoogleSheets(order) {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify(payload),
     });
-    const text = await res.text();
-    console.log(`[SheetsWebhook] ✓ synced orderCode=${payload.orderCode}  orderId=${payload.orderId}  status=${res.status}  body=${text}`);
+    await res.text();
+    logger.info({ orderCode: payload.orderCode, orderId: payload.orderId, status: res.status }, "[SheetsWebhook] synced");
   } catch (err) {
-    console.error(`[SheetsWebhook] ✗ failed for orderCode=${payload.orderCode}  orderId=${payload.orderId}:`, err.message);
+    logger.error({ orderCode: payload.orderCode, orderId: payload.orderId, err: err.message }, "[SheetsWebhook] failed");
   }
 }
 
@@ -354,7 +357,6 @@ async function createOrder(req, res) {
       priceUSDValue = parseFloat(priceUSD);
       if (exchangeRateValue > 0) {
         priceVNDValue = Math.round(priceUSDValue * exchangeRateValue);
-        console.log(`[CreateOrder] Price conversion: $${priceUSDValue} × ${exchangeRateValue} = ${priceVNDValue} VND`);
       }
     }
 
@@ -380,15 +382,7 @@ async function createOrder(req, res) {
       paymentStatus: "pending",
     });
 
-    console.log(`[CreateOrder] User ${userEmail} created order ${orderCode}`);
-    console.log("ORDER BEFORE SYNC:", JSON.stringify({
-      orderCode: order.orderCode,
-      paidAmount: order.paidAmount,
-      remainingAmount: order.remainingAmount,
-      paymentPercent: order.paymentPercent,
-      totalVND: order.totalVND,
-      status: order.status,
-    }));
+    logger.info({ orderId: String(order._id), orderCode, userId: String(userId) }, "[CreateOrder] order created");
 
     await syncOrderToGoogleSheets(order);
 
@@ -397,7 +391,7 @@ async function createOrder(req, res) {
       message: "Order submitted, waiting for approval",
     });
   } catch (error) {
-    console.error("[CreateOrder] Error:", error);
+    logger.error({ err: error.message }, "[CreateOrder] failed");
     return res.status(500).json({ message: "Failed to create order" });
   }
 }
@@ -408,23 +402,19 @@ async function createOrder(req, res) {
 async function getMyOrders(req, res) {
   try {
     const userEmail = req.user.email.toLowerCase().trim();
-    console.log(`[GetMyOrders] Fetching orders for: "${userEmail}"`);
 
     const orders = await Order.find({ userEmail })
       .sort({ createdAt: -1 })
       .lean();
 
-    console.log(`[GetMyOrders] Found ${orders.length} orders for ${userEmail}`);
-    if (orders.length > 0) {
-      console.log(`[GetMyOrders] Found ${orders.length} order(s) for ${userEmail}`);
-    }
+    logger.info({ userId: String(req.user._id), count: orders.length }, "[GetMyOrders] fetched");
 
     return res.status(200).json({
       orders: orders.map(mapOrderForApi),
       count: orders.length,
     });
   } catch (error) {
-    console.error("[GetMyOrders] Error:", error);
+    logger.error({ err: error.message }, "[GetMyOrders] failed");
     return res.status(500).json({ message: "Failed to fetch your orders" });
   }
 }
@@ -433,8 +423,6 @@ async function getMyOrders(req, res) {
 // ADMIN CREATE ORDER (Legacy with price)
 // ============================================
 async function adminCreateOrder(req, res) {
-  console.log("[AdminCreateOrder] Request body:", req.body);
-
   const {
     tracking_code,
     product_name,
@@ -510,7 +498,6 @@ async function adminCreateOrder(req, res) {
   let priceVND = 0;
   if (parsedPriceUSD > 0 && parsedExchangeRate > 0) {
     priceVND = Math.round(parsedPriceUSD * parsedExchangeRate);
-    console.log(`[AdminCreateOrder] Price conversion: $${parsedPriceUSD} × ${parsedExchangeRate} = ${priceVND} VND`);
   }
 
   // Always generate a fresh orderCode — never reuse tracking_code
@@ -560,18 +547,9 @@ async function adminCreateOrder(req, res) {
     orderData.user = req.user._id;
   }
 
-  console.log("CREATE:", JSON.stringify(orderData, null, 2));
-
   const order = await Order.create(orderData);
 
-  console.log("ORDER BEFORE SYNC:", JSON.stringify({
-    orderCode: order.orderCode,
-    paidAmount: order.paidAmount,
-    remainingAmount: order.remainingAmount,
-    paymentPercent: order.paymentPercent,
-    totalVND: order.totalVND,
-    status: order.status,
-  }));
+  logger.info({ orderId: String(order._id), orderCode: order.orderCode, status: order.status }, "[AdminCreateOrder] order created");
 
   await syncOrderToGoogleSheets(order);
 
@@ -587,8 +565,6 @@ async function adminCreateOrder(req, res) {
 async function adminUpdateOrder(req, res) {
   try {
     const { id } = req.params;
-    console.log("[AdminUpdateOrder] id:", id);
-    console.log("[AdminUpdateOrder] body:", JSON.stringify(req.body, null, 2));
 
     // ── 0. Normalise req.body: coerce empty strings → undefined ────────────
     //    Frontend sends "" for blank fields; we treat those as "not set"
@@ -735,11 +711,6 @@ async function adminUpdateOrder(req, res) {
           : (currentOrder.paymentPercent || 0);
       updateData.paymentStatus = finalPct >= 100 ? "paid" : "pending";
 
-      // Debug: log payment state before saving
-      console.log(
-        `[AdminUpdateOrder] payment → totalVND=${totalVND}  paidAmount=${updateData.paidAmount}  ` +
-        `paymentPercent=${updateData.paymentPercent}  remainingAmount=${updateData.remainingAmount}`
-      );
     } else if (["approved", "shipping"].includes(normalizedStatus)) {
       updateData.status = normalizedStatus;
     }
@@ -753,8 +724,6 @@ async function adminUpdateOrder(req, res) {
     delete updateData.updatedAt;
     delete updateData.user;
 
-    console.log("[AdminUpdateOrder] Final updateData:", JSON.stringify(updateData, null, 2));
-
     // ── 7. Persist to DB ───────────────────────────────────────────────────
     const order = await Order.findByIdAndUpdate(
       mongoId,
@@ -766,20 +735,7 @@ async function adminUpdateOrder(req, res) {
       return res.status(404).json({ message: "Order not found after update." });
     }
 
-    console.log(
-      `[AdminUpdateOrder] ✓ Saved _id=${order._id}  staffName="${order.staffName}"  ` +
-      `contactType="${order.contactType}"  contactValue="${order.contactValue}"  ` +
-      `warehouseAddress="${order.warehouseAddress}"  exchangeRate=${order.exchangeRate}`
-    );
-
-    console.log("UPDATE:", JSON.stringify({
-      orderCode: order.orderCode,
-      paidAmount: order.paidAmount,
-      remainingAmount: order.remainingAmount,
-      paymentPercent: order.paymentPercent,
-      totalVND: order.totalVND,
-      status: order.status,
-    }));
+    logger.info({ orderId: String(order._id), orderCode: order.orderCode, status: order.status }, "[AdminUpdateOrder] order updated");
 
     await syncOrderToGoogleSheets(order);
 
@@ -788,7 +744,7 @@ async function adminUpdateOrder(req, res) {
       message: "Order updated successfully.",
     });
   } catch (error) {
-    console.error("[AdminUpdateOrder] Error:", error);
+    logger.error({ err: error.message }, "[AdminUpdateOrder] failed");
     return res.status(500).json({ message: error.message || "Failed to update order." });
   }
 }
@@ -798,7 +754,6 @@ async function adminUpdateOrder(req, res) {
 // ============================================
 async function approveOrder(req, res) {
   const { id } = req.params;
-  console.log("[ApproveOrder] Approving order:", id);
 
   try {
     const order = await Order.findById(id);
@@ -815,25 +770,18 @@ async function approveOrder(req, res) {
     order.approvedBy = req.user._id;
 
     if (order.priceUSD && order.priceUSD > 0) {
-      console.log(`[ApproveOrder] Calculating VND for order ${order.orderCode || order._id}`);
       if (order.exchangeRate && order.exchangeRate > 0) {
         order.priceVND = Math.round(order.priceUSD * order.exchangeRate);
         order.totalVND = order.priceVND;
         order.totalUSD = order.priceUSD;
-        console.log(`[ApproveOrder] Calculated: $${order.priceUSD} × ${order.exchangeRate} = ${order.priceVND} VND`);
       }
     }
 
     await order.save();
-    console.log(`[ApproveOrder] Order ${order.orderCode || order._id} approved by ${req.user.email}`);
-    console.log("ORDER BEFORE SYNC:", JSON.stringify({
-      orderCode: order.orderCode,
-      paidAmount: order.paidAmount,
-      remainingAmount: order.remainingAmount,
-      paymentPercent: order.paymentPercent,
-      totalVND: order.totalVND,
-      status: order.status,
-    }));
+    logger.info(
+      { orderId: String(order._id), orderCode: order.orderCode, approvedBy: String(req.user._id) },
+      "[ApproveOrder] order approved"
+    );
 
     await syncOrderToGoogleSheets(order);
 
@@ -842,7 +790,7 @@ async function approveOrder(req, res) {
       message: "Order approved successfully.",
     });
   } catch (err) {
-    console.error("[ApproveOrder] Error:", err);
+    logger.error({ err: err.message }, "[ApproveOrder] failed");
     return res.status(500).json({ message: "Failed to approve order: " + err.message });
   }
 }
@@ -852,7 +800,6 @@ async function approveOrder(req, res) {
 // ============================================
 async function recalculateVND(req, res) {
   const { id } = req.params;
-  console.log("[RecalculateVND] Recalculating VND for order:", id);
 
   try {
     const order = await Order.findById(id);
@@ -875,7 +822,7 @@ async function recalculateVND(req, res) {
 
     await order.save();
 
-    console.log(`[RecalculateVND] Recalculated: $${order.priceUSD} × ${order.exchangeRate} = ${order.priceVND} VND`);
+    logger.info({ orderId: String(order._id), orderCode: order.orderCode, priceVND: order.priceVND }, "[RecalculateVND] recalculated");
 
     // Always return the updated order
     return res.status(200).json({
@@ -883,7 +830,7 @@ async function recalculateVND(req, res) {
       message: "VND price recalculated successfully.",
     });
   } catch (err) {
-    console.error("[RecalculateVND] Error:", err);
+    logger.error({ err: err.message }, "[RecalculateVND] failed");
     return res.status(500).json({ message: "Failed to recalculate VND: " + err.message });
   }
 }
@@ -915,16 +862,14 @@ async function listOrders(req, res) {
       filter.status = req.query.status;
     }
 
-    console.log(`[ListOrders] User ${userEmail} (role: ${req.user.role}) querying orders with filter:`, JSON.stringify(filter));
-
     const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
-    console.log(`[ListOrders] Found ${orders.length} orders`);
+    logger.info({ userId: String(req.user._id), role: req.user.role, count: orders.length }, "[ListOrders] fetched");
 
     return res.status(200).json({
       orders: orders.map(mapOrderForApi),
     });
   } catch (error) {
-    console.error("[ListOrders] Error:", error);
+    logger.error({ err: error.message }, "[ListOrders] failed");
     return res.status(500).json({ message: "Failed to fetch orders" });
   }
 }
@@ -964,8 +909,6 @@ async function trackOrder(req, res) {
     return res.status(400).json({ message: "Tracking code is required." });
   }
 
-  console.log(`[TrackOrder] User "${userEmail}" (${req.user.role}) searching for code: "${searchCode}"`);
-
   // Build query - admin can find any order, users only see their own
   const query = {
     $or: [
@@ -983,11 +926,11 @@ async function trackOrder(req, res) {
   const order = await Order.findOne(query).lean();
 
   if (!order) {
-    console.log(`[TrackOrder] Order "${searchCode}" not found for user "${userEmail}"`);
+    logger.info({ userId: String(req.user._id) }, "[TrackOrder] not found");
     return res.status(404).json({ message: "Order not found." });
   }
 
-  console.log(`[TrackOrder] Found order ${order.orderCode || order.trackingId} for ${isAdmin ? "admin" : "user"}`);
+  logger.info({ orderId: String(order._id), userId: String(req.user._id), isAdmin }, "[TrackOrder] found");
 
   const timeline = buildTimeline(order);
   const mapped = mapOrderForApi(order);
@@ -1013,8 +956,6 @@ async function searchOrders(req, res) {
       return res.status(200).json([]);
     }
 
-    console.log(`[SearchOrders] User "${userEmail}" (${req.user.role}) searching: "${keyword}"`);
-
     const query = {
       $or: [
         { orderCode: { $regex: keyword, $options: "i" } },
@@ -1034,11 +975,11 @@ async function searchOrders(req, res) {
 
     const mapped = orders.map(mapOrderForApi);
 
-    console.log(`[SearchOrders] Found ${mapped.length} results for "${keyword}"`);
+    logger.info({ userId: String(req.user._id), count: mapped.length }, "[SearchOrders] results");
 
     return res.status(200).json(mapped);
   } catch (error) {
-    console.error("[SearchOrders] Error:", error);
+    logger.error({ err: error.message }, "[SearchOrders] failed");
     return res.status(500).json({ message: "Search failed." });
   }
 }
@@ -1049,7 +990,6 @@ async function searchOrders(req, res) {
 async function deleteOrder(req, res) {
   try {
     const { id } = req.params;
-    console.log("[DeleteOrder] Deleting order:", id);
 
     const order = await Order.findById(id);
     if (!order) {
@@ -1058,7 +998,7 @@ async function deleteOrder(req, res) {
 
     // Sync to Google Sheets — tell the sheet to delete the row
     if (!env.WEBHOOK_URL) {
-      console.warn("[DeleteOrder] WEBHOOK_URL not set — skipping sheet delete sync.");
+      logger.warn("[DeleteOrder] WEBHOOK_URL not set — skipping sheet delete sync.");
     } else {
       try {
         const webhookPayload = {
@@ -1066,27 +1006,26 @@ async function deleteOrder(req, res) {
           orderCode: order.orderCode || "",
           orderId: order._id ? String(order._id) : "",
         };
-        console.log("DELETE:", webhookPayload.orderCode);
         const sheetRes = await fetch(env.WEBHOOK_URL, {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
           body:    JSON.stringify(webhookPayload),
         });
-        const text = await sheetRes.text();
-        console.log(`[DeleteOrder] Sheets response: ${sheetRes.status}  ${text}`);
+        await sheetRes.text();
+        logger.info({ orderCode: webhookPayload.orderCode, status: sheetRes.status }, "[DeleteOrder] sheets sync response");
       } catch (sheetErr) {
         // Sheet errors are logged but must not block DB deletion
-        console.error("[DeleteOrder] Sheets sync error:", sheetErr.message);
+        logger.error({ err: sheetErr.message }, "[DeleteOrder] sheets sync error");
       }
     }
 
     // Delete from database
     await Order.findByIdAndDelete(id);
-    console.log(`[DeleteOrder] ✓ Deleted order ${id} from DB`);
+    logger.info({ orderId: id }, "[DeleteOrder] deleted");
 
     return res.status(200).json({ message: "Order deleted successfully." });
   } catch (error) {
-    console.error("[DeleteOrder] Error:", error);
+    logger.error({ err: error.message }, "[DeleteOrder] failed");
     return res.status(500).json({ message: "Delete failed: " + error.message });
   }
 }
