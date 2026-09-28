@@ -178,27 +178,35 @@ async function connectDatabase() {
   }
 }
 
-// Start HTTP server FIRST, then connect DB in background
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
-  console.log(`Health check: http://0.0.0.0:${PORT}/health`);
-});
+// Only boot the HTTP listener / DB connection / fatal-error exit handlers
+// when this file is run directly (`node server.js`). When it's `require`d
+// (e.g. by the test suite via supertest), the caller owns the process
+// lifecycle and just wants the configured `app`.
+if (require.main === module) {
+  // Start HTTP server FIRST, then connect DB in background
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Health check: http://0.0.0.0:${PORT}/health`);
+  });
 
-// Connect DB after server is already listening
-connectDatabase().catch((err) => {
-  console.error("connectDatabase error:", err.message);
-});
+  // Connect DB after server is already listening
+  connectDatabase().catch((err) => {
+    console.error("connectDatabase error:", err.message);
+  });
 
-// Both handlers exit the process — the container orchestrator's restart
-// policy (`restart: unless-stopped` in docker-compose.yml) brings it back
-// up. Continuing to run after either event risks operating in a corrupted
-// in-memory state.
-process.on("unhandledRejection", (err) => {
-  logger.error({ err }, "Unhandled Rejection — exiting");
-  process.exit(1);
-});
+  // Both handlers exit the process — the container orchestrator's restart
+  // policy (`restart: unless-stopped` in docker-compose.yml) brings it back
+  // up. Continuing to run after either event risks operating in a corrupted
+  // in-memory state.
+  process.on("unhandledRejection", (err) => {
+    logger.error({ err }, "Unhandled Rejection — exiting");
+    process.exit(1);
+  });
 
-process.on("uncaughtException", (err) => {
-  logger.error({ err }, "Uncaught Exception — exiting");
-  process.exit(1);
-});
+  process.on("uncaughtException", (err) => {
+    logger.error({ err }, "Uncaught Exception — exiting");
+    process.exit(1);
+  });
+}
+
+module.exports = app;
