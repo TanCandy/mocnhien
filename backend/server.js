@@ -25,6 +25,14 @@ const { connectDB } = require("./config/db");
 const apiRoutes = require("./routes");
 const { errorHandler } = require("./middleware/errorHandler");
 
+// ====================
+// ERROR TRACKING — Sentry, no-op unless SENTRY_DSN is set.
+// ====================
+const Sentry = require("@sentry/node");
+if (process.env.SENTRY_DSN) {
+  Sentry.init({ dsn: process.env.SENTRY_DSN, environment: env.NODE_ENV });
+}
+
 const app = express();
 
 // ====================
