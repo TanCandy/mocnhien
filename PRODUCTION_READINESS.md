@@ -240,7 +240,7 @@ These were fixed and live-verified in-browser in a prior session. Confirm they'r
   - **Exact change:** Have `AdminRoute.tsx` read `role` from `UserContext` (calling/awaiting `refreshUser()` if needed) instead of decoding the JWT directly.
   - **How to verify:** Promote a logged-in user to admin directly in the DB, trigger a `UserContext` refresh (e.g., navigate), and confirm admin nav becomes available without requiring a full logout/login.
 
-- [ ] **P1-9: Legacy/duplicate Order schema fields**
+- [x] **P1-9: Legacy/duplicate Order schema fields**
   - **Problem:** `backend/models/Order.js` carries legacy/duplicate fields (`address` vs structured address fields, `trackingId` vs `tracking_code` vs `uspsTracking`, `total_price` vs `totalUSD`/`totalVND`) from prior migrations that were never cleaned up.
   - **Files to touch:** `backend/models/Order.js`, a new `MIGRATIONS.md` or note in `backend/scripts/`.
   - **Exact change:** Document which fields are currently authoritative vs legacy (do not delete anything yet). Plan a follow-up migration to drop dead fields only once confirmed unused by any remaining client code or reports — this is a documentation task now, a schema-migration task later.
