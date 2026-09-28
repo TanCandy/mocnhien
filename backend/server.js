@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const dotenv = require("dotenv");
+const mongoose = require("mongoose");
 
 // Load .env from backend directory (production) or project root (development)
 const envPath = path.join(__dirname, ".env");
@@ -62,7 +63,11 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({ ok: true, timestamp: new Date().toISOString() });
+  const dbConnected = mongoose.connection.readyState === 1;
+  if (!dbConnected) {
+    return res.status(503).json({ ok: false, db: "disconnected", timestamp: new Date().toISOString() });
+  }
+  res.json({ ok: true, db: "connected", timestamp: new Date().toISOString() });
 });
 
 // ====================
