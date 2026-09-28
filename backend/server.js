@@ -21,6 +21,7 @@ console.log("MONGODB_URI:", process.env.MONGODB_URI ? "SET" : "NOT SET");
 console.log("JWT_SECRET:", process.env.JWT_SECRET ? "SET" : "NOT SET");
 
 const { env } = require("./config/env");
+const { logger } = require("./config/logger");
 const { connectDB } = require("./config/db");
 const apiRoutes = require("./routes");
 const { errorHandler } = require("./middleware/errorHandler");
@@ -171,10 +172,16 @@ connectDatabase().catch((err) => {
   console.error("connectDatabase error:", err.message);
 });
 
+// Both handlers exit the process — the container orchestrator's restart
+// policy (`restart: unless-stopped` in docker-compose.yml) brings it back
+// up. Continuing to run after either event risks operating in a corrupted
+// in-memory state.
 process.on("unhandledRejection", (err) => {
-  console.error("Unhandled Rejection:", err.message);
+  logger.error({ err }, "Unhandled Rejection — exiting");
+  process.exit(1);
 });
 
 process.on("uncaughtException", (err) => {
-  console.error("Uncaught Exception:", err.message);
+  logger.error({ err }, "Uncaught Exception — exiting");
+  process.exit(1);
 });
