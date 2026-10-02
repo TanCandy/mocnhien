@@ -25,6 +25,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const adminLinks = [
     { name: "Manage Users", path: "/admin/dashboard" },
     { name: "Manage Orders", path: "/admin/orders" },
+    { name: "Payments", path: "/admin/payments" },
   ];
 
   return (

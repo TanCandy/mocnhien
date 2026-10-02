@@ -1,11 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { Loader2, PlusCircle, Pencil, X, Package, ExternalLink, CheckCircle, RefreshCw, Trash2 } from "lucide-react";
+import { Loader2, PlusCircle, Pencil, X, Package, ExternalLink, CheckCircle, RefreshCw, Trash2, Download } from "lucide-react";
 import { SuccessModal } from "../components/Toast";
 import ScrollableTable from "../components/ScrollableTable";
 import { formatCurrencyInput, formatVND, formatUSD, parseUSD, ensureUrlProtocol } from "../lib/formatters";
 import { calculateVND, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
 import { getWarehouseAddress, computeOrderVND, getMongoOrderId, resolveContactDisplay } from "../lib/orderUtils";
+import { PRODUCT_TYPES, normalizeProductType, isKnownProductType } from "../lib/productTypes";
 
 // ─── Contact helpers ─────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ interface Order {
   exchangeRate?: number;
   totalUSD?: number;
   totalVND?: number;
+  remainingAmount?: number;
 }
 
 interface OrderFormData {
@@ -95,7 +97,6 @@ interface OrderFormData {
   uspsTracking: string;
   priceUSD: string;
   exchangeRate: string;
-  totalVND: string;
 }
 
 const initialFormData: OrderFormData = {
@@ -122,8 +123,25 @@ const initialFormData: OrderFormData = {
   uspsTracking: "",
   priceUSD: "",
   exchangeRate: "",
-  totalVND: "",
 };
+
+interface ExportFilters {
+  status: string;
+  paymentStatus: string;
+  from: string;
+  to: string;
+}
+
+const initialExportFilters: ExportFilters = { status: "", paymentStatus: "", from: "", to: "" };
+
+function filtersToQuery(filters: ExportFilters): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value);
+  }
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
 
 const StatusBadge = ({ status }: { status: string }) => {
   const styles: Record<string, string> = {
@@ -167,7 +185,7 @@ const VNDCell = ({ priceUSD, priceVND, exchangeRate }: { priceUSD?: number; pric
 // ─── Payment Section ──────────────────────────────────────────────────────────
 
 interface PaymentSectionProps {
-  totalVND: string;
+  totalVND: number;
   paymentPercent: string;
   paidAmount: string;
   status: string;
@@ -183,13 +201,18 @@ function parseVND(v: string): number {
 }
 
 const PaymentSection = ({ totalVND, paymentPercent, paidAmount, status, onChange }: PaymentSectionProps) => {
-  const total = parseVND(totalVND);
-  const pct = Math.min(100, Math.max(0, Number(paymentPercent) || 0));
+  const total = Math.max(0, Math.round(totalVND));
   const paid = parseVND(paidAmount);
+  // Same rule as the server: floor, capped at 100
+  const pct = total > 0 ? Math.min(100, Math.floor((paid / total) * 100)) : Math.min(100, Math.max(0, Number(paymentPercent) || 0));
   const remaining = total - paid;
 
-  if (status !== "pending") {
-    return null;
+  if (status === "delivered") {
+    return (
+      <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-sm text-green-800">
+        Delivered orders are recorded as fully paid{total > 0 ? ` (${formatVNDInput(total)} đ)` : ""}.
+      </div>
+    );
   }
 
   const handlePercentChange = (newPct: number) => {
@@ -204,8 +227,9 @@ const PaymentSection = ({ totalVND, paymentPercent, paidAmount, status, onChange
 
   const handlePaidAmountChange = (newPaidStr: string) => {
     const raw = parseVND(newPaidStr);
-    const clamped = Math.min(total, Math.max(0, raw));
-    const newPct = total > 0 ? Math.round((clamped / total) * 100) : 0;
+    // Without a price there is nothing to clamp against — keep what was typed.
+    const clamped = total > 0 ? Math.min(total, Math.max(0, raw)) : Math.max(0, raw);
+    const newPct = total > 0 ? Math.min(100, Math.floor((clamped / total) * 100)) : 0;
     onChange({
       paymentPercent: newPct.toString(),
       paidAmount: clamped.toString(),
@@ -213,10 +237,15 @@ const PaymentSection = ({ totalVND, paymentPercent, paidAmount, status, onChange
     });
   };
 
-  const isPaid = pct >= 100;
+  const isPaid = total > 0 && paid >= total;
 
   return (
     <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-4">
+      {total <= 0 && (
+        <p className="text-xs text-amber-700">
+          Set a USD price and exchange rate to calculate the amount due.
+        </p>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between">
         <label className="text-sm font-bold text-amber-800">Payment</label>
@@ -303,6 +332,51 @@ export default function AdminOrders() {
   const [formError, setFormError] = useState("");
   const [formLoading, setFormLoading] = useState(false);
   const [successData, setSuccessData] = useState<{ title: string; message: string } | null>(null);
+  // Payment fields are only sent when the admin actually changed them, so an
+  // unrelated edit can't overwrite a bank transfer credited meanwhile.
+  const [paymentTouched, setPaymentTouched] = useState(false);
+  const [exportFilters, setExportFilters] = useState<ExportFilters>(initialExportFilters);
+  const [exporting, setExporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [toolbarMessage, setToolbarMessage] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
+
+  // Total in VND as the server will compute it (USD × rate, else the stored VND price)
+  const liveTotalVND = (): number => {
+    const usd = parseUSD(formData.priceUSD);
+    const rate = parseExchangeRate(formData.exchangeRate);
+    if (usd > 0 && rate > 0) return calculateVND(usd, rate);
+    if (formData.priceUSD.trim() && usd === 0) return 0; // price cleared
+    return editingOrder ? computeOrderVND(editingOrder.priceUSD, editingOrder.exchangeRate, editingOrder.priceVND) : 0;
+  };
+
+  async function handleExport() {
+    setExporting(true);
+    setToolbarMessage(null);
+    try {
+      await api.download(`/api/orders/export${filtersToQuery(exportFilters)}`, "orders.xlsx");
+    } catch (err: any) {
+      setToolbarMessage({ kind: "error", text: err.message || "Export failed" });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleSheetsResync() {
+    const confirmed = window.confirm(
+      "Push all orders matching these filters to the Google Sheet? Existing rows are updated by order code."
+    );
+    if (!confirmed) return;
+    setSyncing(true);
+    setToolbarMessage(null);
+    try {
+      const res = await api.post(`/api/orders/sheets/resync${filtersToQuery(exportFilters)}`);
+      setToolbarMessage({ kind: "ok", text: res.message || "Google Sheet synced." });
+    } catch (err: any) {
+      setToolbarMessage({ kind: "error", text: err.message || "Google Sheet sync failed" });
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   // Preview VND price based on user-entered exchange rate
   const previewPriceVND = () => {
@@ -331,6 +405,7 @@ export default function AdminOrders() {
     setEditingOrder(null);
     setFormData(initialFormData);
     setFormError("");
+    setPaymentTouched(false);
     setShowModal(true);
   }
 
@@ -341,7 +416,7 @@ export default function AdminOrders() {
       tracking_code: order.tracking_code || order.trackingId || "",
       product_name: order.product_name || order.productName || "",
       productName: order.productName || order.product_name || "",
-      productType: order.productType || "",
+      productType: normalizeProductType(order.productType),
       address: getWarehouseAddress(order),
       warehouseAddress: getWarehouseAddress(order),
       staffName: order.staffName ?? "",
@@ -359,9 +434,9 @@ export default function AdminOrders() {
       uspsTracking: order.uspsTracking || "",
       priceUSD: order.priceUSD?.toString() || order.totalUSD?.toString() || "",
       exchangeRate: order.exchangeRate?.toString() || "",
-      totalVND: order.priceVND?.toString() || order.totalVND?.toString() || "",
     });
     setFormError("");
+    setPaymentTouched(false);
     setShowModal(true);
   }
 
@@ -430,7 +505,7 @@ export default function AdminOrders() {
       setOrders((prev) => prev.filter((order) => String(order._id) !== orderId));
       setSuccessData({
         title: "Order Deleted",
-        message: "The order has been removed from the database and Google Sheets.",
+        message: "The order has been deleted (and removed from the Google Sheet if sync is enabled).",
       });
     } catch (err: any) {
       setError(err.message || "Failed to delete order");
@@ -507,23 +582,23 @@ export default function AdminOrders() {
         contactValue:
           formData.contactType === "none" ? "NO_CONTACT" : formData.contactValue.trim(),
 
-        // Pricing
+        // Pricing — the server derives VND, paid % and remaining amount
         priceUSD: formData.priceUSD,
-        total_price: formData.total_price ? parseFloat(formData.total_price) : 0,
+        total_price: formData.total_price ? parseFloat(formData.total_price) : undefined,
         exchangeRate: formData.exchangeRate ? parseFloat(formData.exchangeRate) : undefined,
-        // Always send totalVND so the backend can trust it for remainingAmount calculation
-        totalVND: formData.totalVND ? parseFloat(formData.totalVND) : 0,
 
         // Status (admin only)
         sold_by: formData.sold_by || undefined,
         status: formData.status,
-        paymentStatus: formData.paymentStatus,
-        paymentPercent: formData.paymentPercent ? Number(formData.paymentPercent) : 0,
-        // Always send paidAmount (including 0) so backend knows the user saw/edited it
-        paidAmount: Number(formData.paidAmount) || 0,
-        // Backend will recalculate remainingAmount from totalVND - paidAmount
         uspsTracking: formData.uspsTracking || undefined,
       };
+
+      if (paymentTouched && formData.status !== "delivered") {
+        payload.paidAmount = parseVND(formData.paidAmount);
+        payload.paymentStatus = formData.paymentStatus;
+        // Lets the server refuse the edit if a transfer landed after the form opened
+        if (editingOrder) payload.expectedPaidAmount = editingOrder.paidAmount || 0;
+      }
 
       if (editingOrder) {
         const orderId = getMongoOrderId(editingOrder);
@@ -573,7 +648,30 @@ export default function AdminOrders() {
         await loadOrders();
       }
     } catch (err: any) {
-      setFormError(err.message || "Failed to save order");
+      const message: string = err.message || "Failed to save order";
+      if (editingOrder && /while you were editing/i.test(message)) {
+        // A bank transfer was credited meanwhile: pull the fresh payment
+        // figures into the form (keeping the other edits) and let the admin re-check.
+        try {
+          const fresh = await api.get(`/api/orders/${getMongoOrderId(editingOrder)}`);
+          if (fresh?.order) {
+            setEditingOrder(fresh.order);
+            setFormData((prev) => ({
+              ...prev,
+              paidAmount: fresh.order.paidAmount?.toString() || "",
+              paymentPercent: fresh.order.paymentPercent?.toString() || "0",
+              paymentStatus: fresh.order.paymentStatus || "pending",
+            }));
+            setPaymentTouched(false);
+            loadOrders();
+          }
+        } catch {
+          /* keep the original error */
+        }
+        setFormError("A bank transfer was credited to this order while you were editing. The payment fields now show the latest amount — check them and save again.");
+      } else {
+        setFormError(message);
+      }
     } finally {
       setFormLoading(false);
     }
@@ -590,6 +688,79 @@ export default function AdminOrders() {
           <PlusCircle className="w-5 h-5" />
           Create Order
         </button>
+      </div>
+
+      {/* Export / Google Sheet toolbar */}
+      <div className="bg-surface-container-low rounded-[20px] p-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="block text-xs font-bold text-on-surface-variant mb-1">Status</label>
+          <select
+            className="bg-surface-container-lowest rounded-full px-4 py-2 text-sm"
+            value={exportFilters.status}
+            onChange={(e) => setExportFilters((f) => ({ ...f, status: e.target.value }))}
+          >
+            <option value="">All</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="shipping">Shipping</option>
+            <option value="delivered">Delivered</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-on-surface-variant mb-1">Payment</label>
+          <select
+            className="bg-surface-container-lowest rounded-full px-4 py-2 text-sm"
+            value={exportFilters.paymentStatus}
+            onChange={(e) => setExportFilters((f) => ({ ...f, paymentStatus: e.target.value }))}
+          >
+            <option value="">All</option>
+            <option value="pending">Unpaid / partial</option>
+            <option value="paid">Paid</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-on-surface-variant mb-1">From</label>
+          <input
+            type="date"
+            className="bg-surface-container-lowest rounded-full px-4 py-2 text-sm"
+            value={exportFilters.from}
+            onChange={(e) => setExportFilters((f) => ({ ...f, from: e.target.value }))}
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-on-surface-variant mb-1">To</label>
+          <input
+            type="date"
+            className="bg-surface-container-lowest rounded-full px-4 py-2 text-sm"
+            value={exportFilters.to}
+            onChange={(e) => setExportFilters((f) => ({ ...f, to: e.target.value }))}
+          />
+        </div>
+        <div className="flex gap-2 ml-auto">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="bg-primary text-on-primary px-5 py-2 rounded-full text-sm font-bold flex items-center gap-2 hover:bg-primary/90 disabled:opacity-60"
+          >
+            {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            Export Excel
+          </button>
+          <button
+            type="button"
+            onClick={handleSheetsResync}
+            disabled={syncing}
+            className="border border-primary text-primary px-5 py-2 rounded-full text-sm font-bold flex items-center gap-2 hover:bg-primary/5 disabled:opacity-60"
+          >
+            {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Sync Google Sheet
+          </button>
+        </div>
+        {toolbarMessage && (
+          <p className={`w-full text-sm ${toolbarMessage.kind === "error" ? "text-red-600" : "text-green-700"}`}>
+            {toolbarMessage.text}
+          </p>
+        )}
       </div>
 
       {loading ? (
@@ -696,6 +867,11 @@ export default function AdminOrders() {
                           {formatVND(order.paidAmount)}
                         </div>
                       )}
+                      {order.paymentStatus !== "paid" && order.status !== "delivered" && (order.remainingAmount ?? 0) > 0 && (order.paidAmount ?? 0) > 0 && (
+                        <div className="text-xs text-red-600">
+                          còn {formatVND(order.remainingAmount ?? 0)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
@@ -784,11 +960,13 @@ export default function AdminOrders() {
                     onChange={(e) => setFormData({ ...formData, productType: e.target.value })}
                   >
                     <option value="">Select type</option>
-                    <option value="shoes">Shoes</option>
-                    <option value="electronics">Electronics</option>
-                    <option value="fashion">Fashion</option>
-                    <option value="beauty">Beauty</option>
-                    <option value="other">Other</option>
+                    {PRODUCT_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                    {/* keep a legacy/custom category selectable instead of blanking it */}
+                    {formData.productType && !isKnownProductType(formData.productType) && (
+                      <option value={formData.productType}>{formData.productType}</option>
+                    )}
                   </select>
                 </div>
               </div>
@@ -955,18 +1133,8 @@ export default function AdminOrders() {
                     value={formData.status}
                     onChange={(e) => {
                       const newStatus = e.target.value;
-                      if (newStatus === "delivered") {
-                        const total = parseVND(formData.totalVND);
-                        setFormData({
-                          ...formData,
-                          status: newStatus,
-                          paymentPercent: "100",
-                          paidAmount: total.toString(),
-                          paymentStatus: "paid",
-                        });
-                      } else {
-                        setFormData((prev) => ({ ...prev, status: newStatus }));
-                      }
+                      // The server marks delivered orders as fully paid.
+                      setFormData((prev) => ({ ...prev, status: newStatus }));
                     }}
                   >
                     <option value="pending">Pending</option>
@@ -979,28 +1147,36 @@ export default function AdminOrders() {
 
               {/* Payment Section — bidirectional % ↔ VND sync */}
               <PaymentSection
-                totalVND={formData.totalVND}
+                totalVND={liveTotalVND()}
                 paymentPercent={formData.paymentPercent}
                 paidAmount={formData.paidAmount}
                 status={formData.status}
-                onChange={(updates) => setFormData((prev) => ({ ...prev, ...updates }))}
+                onChange={(updates) => {
+                  setPaymentTouched(true);
+                  setFormData((prev) => ({ ...prev, ...updates }));
+                }}
               />
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-bold text-on-surface-variant mb-1">
-                    Payment Status
-                    {formData.status === "pending" && (
-                      <span className="text-xs text-amber-600 ml-1">(auto)</span>
-                    )}
-                  </label>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-1">Payment Status</label>
                   <select
                     className={`w-full bg-surface-container-lowest rounded-full px-6 py-3 ${
-                      formData.status === "pending" ? "opacity-60" : ""
+                      formData.status === "delivered" ? "opacity-60" : ""
                     }`}
-                    value={formData.paymentStatus}
-                    disabled={formData.status === "pending"}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, paymentStatus: e.target.value }))}
+                    value={formData.status === "delivered" ? "paid" : formData.paymentStatus}
+                    disabled={formData.status === "delivered"}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      const total = liveTotalVND();
+                      setPaymentTouched(true);
+                      setFormData((prev) => ({
+                        ...prev,
+                        paymentStatus: value,
+                        // "Paid" settles the balance; the server applies the same rule.
+                        ...(value === "paid" && total > 0 ? { paidAmount: String(total), paymentPercent: "100" } : {}),
+                      }));
+                    }}
                   >
                     <option value="pending">Pending</option>
                     <option value="paid">Paid</option>

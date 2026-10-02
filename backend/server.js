@@ -37,6 +37,18 @@ if (process.env.SENTRY_DSN) {
 const app = express();
 
 // ====================
+// REVERSE PROXY — behind Caddy/nginx/a PaaS router, req.ip and req.protocol
+// must come from X-Forwarded-* or every client shares the proxy's IP (which
+// breaks per-IP rate limiting). TRUST_PROXY = number of proxy hops (e.g. 1),
+// or "true"/"false". Unset = don't trust (safe for direct exposure).
+// ====================
+if (process.env.TRUST_PROXY) {
+  const raw = process.env.TRUST_PROXY.trim();
+  const hops = Number(raw);
+  app.set("trust proxy", Number.isInteger(hops) ? hops : raw === "true");
+}
+
+// ====================
 // SECURITY HEADERS — helmet with a CSP matching this app's actual sources
 // (Vite build output loaded from dist/, Google Fonts stylesheet, Google
 // profile-photo images, same-origin XHR/fetch to this API).
@@ -73,22 +85,34 @@ app.use(helmet({
 // ====================
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
-  .map((s) => s.trim())
+  .map((s) => s.trim().replace(/\/$/, ""))
   .filter(Boolean);
+
+// The public site URL (used in emails) is always an allowed origin, so a
+// self-hosted deploy only has to set it once.
+for (const url of [process.env.CLIENT_URL, process.env.FRONTEND_BASE_URL]) {
+  try {
+    if (url) allowedOrigins.push(new URL(url).origin);
+  } catch {
+    // ignore malformed URL — config validation is not this block's job
+  }
+}
 
 app.use("/api", cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    return callback(new Error("Not allowed by CORS"));
+    const err = new Error("Not allowed by CORS");
+    err.statusCode = 403;
+    return callback(err);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
 // ====================

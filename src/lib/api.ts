@@ -35,13 +35,44 @@ async function request(path: string, init: RequestInit = {}) {
   if (!res.ok) {
     const message = data?.message || `Server error (${res.status})`;
     console.error(`[API] Error ${res.status}:`, message);
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: res.status });
   }
 
   return data;
 }
 
+/** Fetch a file (e.g. the Excel export) with auth and trigger a browser download. */
+async function download(path: string, fallbackName: string) {
+  const token = getToken();
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(baseUrl ? `${baseUrl}${path}` : path, { headers, credentials: "include" });
+  if (!res.ok) {
+    let message = `Server error (${res.status})`;
+    try {
+      message = (await res.json())?.message || message;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(message);
+  }
+
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1] || fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export const api = {
+  download,
   get: (path: string) => request(path, { method: "GET" }),
   post: (path: string, body?: unknown) =>
     request(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),

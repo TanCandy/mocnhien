@@ -2,6 +2,7 @@ const express = require("express");
 const { authMiddleware } = require("../middleware/authMiddleware");
 const { roleMiddleware } = require("../middleware/roleMiddleware");
 const orderController = require("../controllers/orderController");
+const exportController = require("../controllers/exportController");
 
 const router = express.Router();
 
@@ -24,6 +25,10 @@ router.post("/", authMiddleware, orderController.createOrder);
 
 // Get user's orders (fallback, filtered by user ID)
 router.get("/", authMiddleware, orderController.listOrders);
+
+// Admin: Excel export + Google Sheets bulk resync (must be before "/:id")
+router.get("/export", authMiddleware, roleMiddleware("admin"), exportController.exportOrders);
+router.post("/sheets/resync", authMiddleware, roleMiddleware("admin"), exportController.resyncSheets);
 
 // Get single order
 router.get("/:id", authMiddleware, orderController.getOrder);

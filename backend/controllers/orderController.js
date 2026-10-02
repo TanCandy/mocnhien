@@ -1,69 +1,67 @@
 const crypto = require("crypto");
 const mongoose = require("mongoose");
-const { env } = require("../config/env");
 const { logger } = require("../config/logger");
 const { calculateQuote } = require("../utils/quoteCalculator");
 const Order = require("../models/Order");
 const { parseUSD, formatVND, formatUSD } = require("../services/exchangeRateService");
+const { getOrderTotalUSD, getOrderTotalVND, computePaymentFields } = require("../services/orderMath");
+const sheets = require("../services/sheetsSync");
 
-async function syncOrderToGoogleSheets(order) {
-  if (!env.WEBHOOK_URL) {
-    logger.warn("[SheetsWebhook] WEBHOOK_URL not set — skipping sync.");
-    return;
+const syncOrderToGoogleSheets = sheets.syncOrder;
+
+/** Mongoose validation / cast problems are the caller's fault → 400, not 500. */
+function isClientDbError(err) {
+  return err && (err.name === "ValidationError" || err.name === "CastError");
+}
+
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Owner = the account that placed it, or the customer email it's addressed to. */
+function isOrderOwner(order, user) {
+  const email = String(user.email || "").toLowerCase().trim();
+  const ownerId = order.user?._id ?? order.user;
+  return (ownerId && String(ownerId) === String(user._id)) || (!!email && order.userEmail === email);
+}
+
+/**
+ * Resolve the payment fields to store, given what an admin sent.
+ * - delivered ⇒ fully paid (any overpayment is kept)
+ * - paidAmount is the source of truth; paymentPercent is only used when no
+ *   paidAmount was sent
+ * - an explicit paymentStatus "paid" settles the balance (e.g. cash received)
+ * - an explicit paymentStatus "pending" is kept as a manual override
+ */
+function resolvePaymentUpdate({ totalVND, currentPaid, status, paidAmount, paymentPercent, paymentStatus }) {
+  let paid = currentPaid;
+  if (paidAmount !== undefined && paidAmount !== null && paidAmount !== "") {
+    paid = Math.max(0, Number(paidAmount) || 0);
+  } else if (paymentPercent !== undefined && paymentPercent !== null && paymentPercent !== "") {
+    const pct = Math.min(100, Math.max(0, Number(paymentPercent) || 0));
+    paid = Math.round((pct / 100) * totalVND);
   }
 
-  // CRITICAL: orderCode MUST exist — skip sync (not throw) so DB write is never blocked
-  if (!order.orderCode) {
-    logger.error({ orderId: order._id ? String(order._id) : "" }, "[SheetsWebhook] Missing orderCode, skipping sync.");
-    return;
+  const explicit = paymentStatus ? String(paymentStatus).toLowerCase() : undefined;
+  if (status === "delivered" || explicit === "paid") {
+    paid = Math.max(paid, totalVND);
   }
 
-  const orderId = order._id ? String(order._id) : "";
-  const payload = {
-    date:            new Date(order.createdAt).toLocaleDateString("vi-VN"),
-    orderCode:       order.orderCode || "",
-    orderId:         orderId,
-    staffName:       order.staffName ?? "",
-    productName:     order.productName || "",
-    productLink:     order.productLink || "",
-    warehouse:       order.warehouseAddress || "",
-    customerName:    order.customerName || "",
-    contactType:     order.contactType || "",
-    contactValue:    order.contactValue || "",
-    usd:             order.priceUSD ?? 0,
-    exchangeRate:    order.exchangeRate ?? 0,
-    vnd:             order.priceVND ?? 0,
-    paidAmount:      order.paidAmount ?? 0,
-    paymentPercentage: order.paymentPercent ?? 0,
-    remainingAmount:   order.remainingAmount ?? 0,
-    status:         order.status || "",
-    trackingNumber: order.uspsTracking || "",
-    createdAt:       order.createdAt ? new Date(order.createdAt).toISOString() : "",
-    updatedAt:       order.updatedAt ? new Date(order.updatedAt).toISOString() : "",
-  };
-
-  logger.info(
-    {
-      orderCode: payload.orderCode,
-      paidAmount: payload.paidAmount,
-      remainingAmount: payload.remainingAmount,
-      paymentPercent: payload.paymentPercentage,
-      vnd: payload.vnd,
-    },
-    "[SheetsWebhook] Sending order"
-  );
-
-  try {
-    const res = await fetch(env.WEBHOOK_URL, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(payload),
-    });
-    await res.text();
-    logger.info({ orderCode: payload.orderCode, orderId: payload.orderId, status: res.status }, "[SheetsWebhook] synced");
-  } catch (err) {
-    logger.error({ orderCode: payload.orderCode, orderId: payload.orderId, err: err.message }, "[SheetsWebhook] failed");
+  const fields = computePaymentFields(totalVND, paid);
+  if (status === "delivered" || explicit === "paid") {
+    fields.paymentStatus = "paid";
+  } else if (explicit === "pending") {
+    fields.paymentStatus = "pending";
   }
+  return fields;
+}
+
+/** Re-derive stored payment fields on a document after its total changed. */
+function applyDerivedPaymentFields(doc) {
+  const fields = computePaymentFields(getOrderTotalVND(doc), doc.paidAmount);
+  doc.paymentPercent = fields.paymentPercent;
+  doc.remainingAmount = fields.remainingAmount;
+  if (doc.status !== "delivered") doc.paymentStatus = fields.paymentStatus;
 }
 
 function generateTrackingId() {
@@ -233,11 +231,12 @@ function buildTimeline(order) {
 
 function mapOrderForApi(order) {
   let price = "$0.00";
-  const priceUSD = order.totalUSD || order.priceUSD || order.total_price || 0;
+  const priceUSD = getOrderTotalUSD(order);
   const exchangeRate = order.exchangeRate || 0;
-  
+
   // ALWAYS recalculate VND from USD to avoid stale values
-  const priceVND = exchangeRate > 0 ? Math.round(priceUSD * exchangeRate) : (order.totalVND || order.priceVND || 0);
+  const priceVND = getOrderTotalVND(order);
+  const payment = computePaymentFields(priceVND, order.paidAmount);
 
   if (priceUSD > 0) {
     price = formatUSD(priceUSD);
@@ -262,7 +261,6 @@ function mapOrderForApi(order) {
     trackingId: order.tracking_code || order.trackingId,
     userId: order.user?._id?.toString() || order.user?.toString(),
     status: order.status,
-    paymentStatus: order.paymentStatus,
     date: formatDate(orderDate),
     warehouseAddress,
     staffName: order.staffName ?? "",
@@ -294,10 +292,12 @@ function mapOrderForApi(order) {
     priceUSDFormatted: formatUSD(priceUSD),
     totalUSD: priceUSD,
     totalVND: priceVND,
-    paymentStatus: order.paymentStatus,
-    paymentPercent: order.paymentPercent ?? 0,
-    paidAmount:     order.paidAmount     ?? 0,
-    remainingAmount: order.remainingAmount ?? (priceVND - (order.paidAmount ?? 0)),
+    paymentStatus: order.paymentStatus || payment.paymentStatus,
+    // Derived, never read from the stored copies — those default to 0 and
+    // were stale for most legacy orders.
+    paymentPercent: payment.paymentPercent,
+    paidAmount: payment.paidAmount,
+    remainingAmount: payment.remainingAmount,
     approvedAt: order.approvedAt,
     approvedBy: order.approvedBy,
     createdAt: order.createdAt,
@@ -434,6 +434,7 @@ async function adminCreateOrder(req, res) {
     order_date,
     sold_by,
     status,
+    paymentStatus,
     paymentPercent,
     paidAmount,
     user_id,
@@ -529,16 +530,14 @@ async function adminCreateOrder(req, res) {
     totalUSD: parsedPriceUSD,
     totalVND: priceVND,
     exchangeRate: parsedExchangeRate,
-    // Payment fields
-    paymentPercent:
-      paymentPercent !== undefined ? Math.min(100, Math.max(0, Number(paymentPercent) || 0)) : 0,
-    paidAmount:
-      paidAmount !== undefined
-        ? Math.max(0, Number(paidAmount) || 0)
-        : (paymentPercent !== undefined
-            ? Math.round((Math.min(100, Math.max(0, Number(paymentPercent) || 0)) / 100) * priceVND)
-            : 0),
-    remainingAmount: 0,
+    ...resolvePaymentUpdate({
+      totalVND: priceVND,
+      currentPaid: 0,
+      status: status || "pending",
+      paidAmount,
+      paymentPercent,
+      paymentStatus,
+    }),
   };
 
   // If user_id provided, use it; otherwise use admin's id (for self-orders)
@@ -639,81 +638,66 @@ async function adminUpdateOrder(req, res) {
       updateData.address = String(raw.warehouseAddress).trim();
     }
 
-    // ── 4. Server-computed price fields ────────────────────────────────────
-    const sentPriceUSD    = raw.priceUSD    !== undefined;
-    const sentExchangeRate = raw.exchangeRate !== undefined;
-
-    const priceUSD =
-      sentPriceUSD ? parseUSD(raw.priceUSD) : (currentOrder.priceUSD || 0);
-    const exchangeRate =
-      sentExchangeRate ? parseFloat(raw.exchangeRate) : (currentOrder.exchangeRate || 0);
-
-    // Recompute VND when USD or exchange rate changes
-    const totalVNDChanged = sentPriceUSD || sentExchangeRate;
-    if (priceUSD > 0 && exchangeRate > 0) {
-      updateData.priceUSD  = priceUSD;
-      updateData.totalUSD  = priceUSD;
-      updateData.priceVND  = Math.round(priceUSD * exchangeRate);
-      updateData.totalVND  = updateData.priceVND;
-    } else if (sentPriceUSD && priceUSD === 0) {
-      updateData.priceUSD = 0;
-      updateData.totalUSD = 0;
-      updateData.priceVND = 0;
-      updateData.totalVND = 0;
+    // ── 4. Server-computed price + payment fields ─────────────────────────
+    //    Money fields are never taken from the body as-is: the total is
+    //    derived server-side (the form's totalVND goes stale when the price is
+    //    edited) and payment fields are recomputed from it.
+    for (const k of [
+      "priceUSD", "totalUSD", "exchangeRate", "priceVND", "totalVND",
+      "paidAmount", "paymentPercent", "paymentStatus", "remainingAmount",
+    ]) {
+      delete updateData[k];
     }
 
-    // ── 5. Payment fields ──────────────────────────────────────────────────
-    const sentPaid    = raw.paidAmount     !== undefined;
-    const sentPercent = raw.paymentPercent !== undefined;
+    const sentPriceUSD = raw.priceUSD !== undefined;
+    const sentExchangeRate = raw.exchangeRate !== undefined;
+    const priceUSD = sentPriceUSD ? parseUSD(raw.priceUSD) : (currentOrder.priceUSD || 0);
+    if (sentPriceUSD) {
+      updateData.priceUSD = priceUSD;
+      updateData.totalUSD = priceUSD;
+    }
+    if (sentExchangeRate) {
+      updateData.exchangeRate = parseFloat(raw.exchangeRate);
+    }
 
-    // Trust totalVND from frontend when sent; fall back to server-computed value
-    const totalVND =
-      raw.totalVND !== undefined
-        ? Math.max(0, Number(raw.totalVND) || 0)
-        : (updateData.totalVND !== undefined ? updateData.totalVND : (currentOrder.totalVND || currentOrder.priceVND || 0));
+    // Clearing the USD price clears the VND price too (no stale fallback).
+    const cleared = sentPriceUSD && priceUSD === 0 ? { priceVND: 0, totalVND: 0 } : {};
+    const totalVND = getOrderTotalVND({ ...currentOrder.toObject(), ...updateData, ...cleared });
+    if (sentPriceUSD || sentExchangeRate) {
+      updateData.priceVND = totalVND;
+      updateData.totalVND = totalVND;
+    }
 
+    // Payment fields are recomputed whenever anything they depend on changed;
+    // otherwise they are left alone so an unrelated edit can't clobber a
+    // payment the webhook recorded while the admin had the form open.
     const normalizedStatus = raw.status ? String(raw.status).toLowerCase() : currentOrder.status;
+    const paymentInputSent =
+      raw.paidAmount !== undefined || raw.paymentPercent !== undefined || raw.paymentStatus !== undefined;
+    const totalChanged = totalVND !== getOrderTotalVND(currentOrder);
 
-    if (normalizedStatus === "delivered") {
-      updateData.status         = "delivered";
-      updateData.paymentStatus = "paid";
-      updateData.paymentPercent = 100;
-      updateData.paidAmount     = totalVND;
-      updateData.remainingAmount = 0;
-    } else if (normalizedStatus === "pending") {
-      updateData.status = "pending";
+    // The edit form also sends the paidAmount it was opened with; if a bank
+    // transfer was credited since, refuse instead of overwriting it.
+    if (
+      paymentInputSent &&
+      raw.expectedPaidAmount !== undefined &&
+      Number(raw.expectedPaidAmount) !== (currentOrder.paidAmount || 0)
+    ) {
+      return res.status(409).json({
+        message: "A payment was recorded for this order while you were editing. Reload and try again.",
+      });
+    }
 
-      if (sentPaid && !sentPercent) {
-        const paid = Math.max(0, Math.min(totalVND, Number(raw.paidAmount) || 0));
-        updateData.paidAmount     = paid;
-        updateData.paymentPercent = totalVND > 0 ? Math.round((paid / totalVND) * 100) : 0;
-      } else if (sentPercent && !sentPaid) {
-        const pct = Math.min(100, Math.max(0, Number(raw.paymentPercent) || 0));
-        updateData.paymentPercent = pct;
-        updateData.paidAmount     = Math.round((pct / 100) * totalVND);
-      } else if (sentPaid && sentPercent) {
-        const paid = Math.max(0, Math.min(totalVND, Number(raw.paidAmount) || 0));
-        const pct  = Math.min(100, Math.max(0, Number(raw.paymentPercent) || 0));
-        updateData.paidAmount     = paid;
-        updateData.paymentPercent = pct;
-      }
-      // If neither paidAmount nor percent sent — preserve existing DB values
-
-      // Always recalculate remainingAmount from current paidAmount and totalVND
-      const finalPaid =
-        updateData.paidAmount !== undefined
-          ? updateData.paidAmount
-          : (currentOrder.paidAmount || 0);
-      updateData.remainingAmount = Math.max(0, totalVND - finalPaid);
-
-      const finalPct =
-        updateData.paymentPercent !== undefined
-          ? updateData.paymentPercent
-          : (currentOrder.paymentPercent || 0);
-      updateData.paymentStatus = finalPct >= 100 ? "paid" : "pending";
-
-    } else if (["approved", "shipping"].includes(normalizedStatus)) {
-      updateData.status = normalizedStatus;
+    updateData.status = normalizedStatus;
+    if (paymentInputSent || totalChanged || normalizedStatus !== currentOrder.status) {
+      Object.assign(updateData, resolvePaymentUpdate({
+        totalVND,
+        currentPaid: currentOrder.paidAmount || 0,
+        status: normalizedStatus,
+        paidAmount: raw.paidAmount,
+        paymentPercent: raw.paymentPercent,
+        paymentStatus: raw.paymentStatus,
+      }));
     }
 
     // ── 6. Strip mongo-only / non-editable fields ───────────────────────────
@@ -724,15 +708,29 @@ async function adminUpdateOrder(req, res) {
     delete updateData.createdAt;
     delete updateData.updatedAt;
     delete updateData.user;
+    delete updateData.appliedPaymentIds; // owned by the payment service
+    delete updateData.expectedPaidAmount;
 
     // ── 7. Persist to DB ───────────────────────────────────────────────────
-    const order = await Order.findByIdAndUpdate(
-      mongoId,
+    //    When payment fields are rewritten, only apply if paidAmount is still
+    //    what we computed from — otherwise a bank transfer landed meanwhile.
+    const filter = { _id: mongoId };
+    if (updateData.paidAmount !== undefined) {
+      filter.paidAmount = currentOrder.paidAmount ? currentOrder.paidAmount : { $in: [0, null] };
+    }
+    const order = await Order.findOneAndUpdate(
+      filter,
       { $set: updateData },
-      { new: true, runValidators: true }
+      { returnDocument: "after", runValidators: true }
     ).lean();
 
     if (!order) {
+      const stillExists = await Order.exists({ _id: mongoId });
+      if (stillExists) {
+        return res.status(409).json({
+          message: "A payment was recorded for this order while you were editing. Reload and try again.",
+        });
+      }
       return res.status(404).json({ message: "Order not found after update." });
     }
 
@@ -745,8 +743,11 @@ async function adminUpdateOrder(req, res) {
       message: "Order updated successfully.",
     });
   } catch (error) {
+    if (isClientDbError(error)) {
+      return res.status(400).json({ message: error.message });
+    }
     logger.error({ err: error.message }, "[AdminUpdateOrder] failed");
-    return res.status(500).json({ message: error.message || "Failed to update order." });
+    return res.status(500).json({ message: "Failed to update order." });
   }
 }
 
@@ -777,6 +778,7 @@ async function approveOrder(req, res) {
         order.totalUSD = order.priceUSD;
       }
     }
+    applyDerivedPaymentFields(order);
 
     await order.save();
     logger.info(
@@ -792,7 +794,7 @@ async function approveOrder(req, res) {
     });
   } catch (err) {
     logger.error({ err: err.message }, "[ApproveOrder] failed");
-    return res.status(500).json({ message: "Failed to approve order: " + err.message });
+    return res.status(500).json({ message: "Failed to approve order." });
   }
 }
 
@@ -820,10 +822,12 @@ async function recalculateVND(req, res) {
     order.priceVND = Math.round(order.priceUSD * order.exchangeRate);
     order.totalVND = order.priceVND;
     order.totalUSD = order.priceUSD;
+    applyDerivedPaymentFields(order);
 
     await order.save();
 
     logger.info({ orderId: String(order._id), orderCode: order.orderCode, priceVND: order.priceVND }, "[RecalculateVND] recalculated");
+    await syncOrderToGoogleSheets(order);
 
     // Always return the updated order
     return res.status(200).json({
@@ -832,7 +836,7 @@ async function recalculateVND(req, res) {
     });
   } catch (err) {
     logger.error({ err: err.message }, "[RecalculateVND] failed");
-    return res.status(500).json({ message: "Failed to recalculate VND: " + err.message });
+    return res.status(500).json({ message: "Failed to recalculate VND." });
   }
 }
 
@@ -888,8 +892,10 @@ async function getOrder(req, res) {
 
   const order = found.toObject ? found.toObject() : found;
 
-  // Non-admins can only view their own orders
-  if (req.user.role !== "admin" && order.user.toString() !== req.user._id.toString()) {
+  // Non-admins can only view their own orders — matched by account id or
+  // by email (admin-created orders belong to the admin account but are
+  // addressed to the customer's email, which is how getMyOrders finds them).
+  if (req.user.role !== "admin" && !isOrderOwner(order, req.user)) {
     return res.status(403).json({ message: "Access denied." });
   }
 
@@ -951,16 +957,18 @@ async function searchOrders(req, res) {
   try {
     const userEmail = req.user.email.toLowerCase().trim();
     const isAdmin = req.user.role === "admin";
-    const keyword = (req.query.q || "").trim();
+    const keyword = String(req.query.q || "").trim().slice(0, 100);
 
     if (!keyword || keyword.length < 1) {
       return res.status(200).json([]);
     }
 
+    // Escaped: a raw user string as $regex allows ReDoS / pattern injection.
+    const pattern = escapeRegex(keyword);
     const query = {
       $or: [
-        { orderCode: { $regex: keyword, $options: "i" } },
-        { customerName: { $regex: keyword, $options: "i" } },
+        { orderCode: { $regex: pattern, $options: "i" } },
+        { customerName: { $regex: pattern, $options: "i" } },
       ],
     };
 
@@ -997,28 +1005,8 @@ async function deleteOrder(req, res) {
       return res.status(404).json({ message: "Order not found." });
     }
 
-    // Sync to Google Sheets — tell the sheet to delete the row
-    if (!env.WEBHOOK_URL) {
-      logger.warn("[DeleteOrder] WEBHOOK_URL not set — skipping sheet delete sync.");
-    } else {
-      try {
-        const webhookPayload = {
-          action: "delete",
-          orderCode: order.orderCode || "",
-          orderId: order._id ? String(order._id) : "",
-        };
-        const sheetRes = await fetch(env.WEBHOOK_URL, {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify(webhookPayload),
-        });
-        await sheetRes.text();
-        logger.info({ orderCode: webhookPayload.orderCode, status: sheetRes.status }, "[DeleteOrder] sheets sync response");
-      } catch (sheetErr) {
-        // Sheet errors are logged but must not block DB deletion
-        logger.error({ err: sheetErr.message }, "[DeleteOrder] sheets sync error");
-      }
-    }
+    // Sheet errors are logged inside and never block DB deletion
+    await sheets.deleteOrderRow(order);
 
     // Delete from database
     await Order.findByIdAndDelete(id);
@@ -1027,7 +1015,10 @@ async function deleteOrder(req, res) {
     return res.status(200).json({ message: "Order deleted successfully." });
   } catch (error) {
     logger.error({ err: error.message }, "[DeleteOrder] failed");
-    return res.status(500).json({ message: "Delete failed: " + error.message });
+    if (isClientDbError(error)) {
+      return res.status(400).json({ message: "Invalid order id." });
+    }
+    return res.status(500).json({ message: "Delete failed." });
   }
 }
 

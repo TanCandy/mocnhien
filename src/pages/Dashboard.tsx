@@ -2,17 +2,19 @@ import { Truck, Wallet, PlusCircle, Search, Receipt, Lightbulb, Headset, ArrowRi
 import { Link, useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
 import { api } from "../lib/api";
-import { useEffect, useState, FormEvent, Fragment } from "react";
+import { useEffect, useState, FormEvent } from "react";
 import { SuccessModal } from "../components/Toast";
 import { formatCurrencyInput, parseUSD, ensureUrlProtocol } from "../lib/formatters";
 import { calculateVND, isValidExchangeRate, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
 import { computeOrderVND } from "../lib/orderUtils";
 import PaymentQR from "../components/PaymentQR";
+import { PRODUCT_TYPES } from "../lib/productTypes";
 
 type OrderStatus = "pending" | "approved" | "shipping" | "delivered";
 
 interface Order {
   id: string;
+  _id?: string;
   orderCode: string;
   trackingId: string;
   status: OrderStatus;
@@ -291,18 +293,9 @@ export default function Dashboard() {
               <div className="flex flex-col gap-4">
                 {orders
                   .filter(order => order.status !== "delivered")
-                  .map((order) => {
-                    const computedVND = computeOrderVND(order.priceUSD, order.exchangeRate, order.priceVND);
-                    return (
-                      <Fragment key={order.id}>
-                        <PaymentQR
-                          orderCode={order.orderCode || order.trackingId || order.id}
-                          status={order.status}
-                          amount={computedVND}
-                        />
-                      </Fragment>
-                    );
-                  })}
+                  .map((order) => (
+                    <PaymentQR key={order.id} orderId={order._id || order.orderCode || order.id} />
+                  ))}
               </div>
               {orders.filter(o => o.status !== "delivered").length === 0 && (
                 <p className="text-sm text-on-surface-variant mt-3 text-center">
@@ -419,15 +412,9 @@ export default function Dashboard() {
                   onChange={(e) => setFormData({ ...formData, productType: e.target.value })}
                 >
                   <option value="">Select product type</option>
-                  <option value="Electronics">Electronics</option>
-                  <option value="Fashion">Fashion & Apparel</option>
-                  <option value="Beauty">Beauty & Cosmetics</option>
-                  <option value="Home">Home & Living</option>
-                  <option value="Health">Health & Supplements</option>
-                  <option value="Books">Books & Stationery</option>
-                  <option value="Toys">Toys & Games</option>
-                  <option value="Sports">Sport & Outdoors</option>
-                  <option value="Other">Other</option>
+                  {PRODUCT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
                 </select>
               </div>
 

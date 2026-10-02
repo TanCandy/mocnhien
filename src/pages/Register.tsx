@@ -47,7 +47,7 @@ export default function Register() {
     setLoading(true);
     console.log("[Register] Submitting registration for:", email);
     try {
-      const data = await api.post("/api/auth/register", { name, email, password, phoneNumber, primaryAddress, role: "user" });
+      const data = await api.post("/api/auth/register", { name, email, password, phoneNumber, primaryAddress });
       console.log("[Register] Success:", data.user);
       setToken(data.token);
       setSessionUser(data.user);

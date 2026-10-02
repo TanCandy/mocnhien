@@ -67,6 +67,9 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // Payment records already credited to paidAmount (idempotency guard for
+    // the bank webhook — see services/paymentService.js).
+    appliedPaymentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Payment" }],
 
     // Pricing — exchangeRate is user-provided (not from external API)
     priceUSD: { type: Number, default: 0 },

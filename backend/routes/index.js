@@ -11,6 +11,7 @@ const quoteRoutes = require("./quoteRoutes");
 const dashboardRoutes = require("./dashboardRoutes");
 const userRoutes = require("./userRoutes");
 const emailRoutes = require("./emailRoutes");
+const paymentRoutes = require("./paymentRoutes");
 
 const router = express.Router();
 
@@ -20,6 +21,7 @@ router.use("/orders", orderRoutes);
 router.use("/quotes", quoteRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/user", userRoutes);
+router.use("/payments", paymentRoutes);
 router.use("/", emailRoutes);
 
 // Direct paths (bypass /auth prefix) — matches what the frontend calls

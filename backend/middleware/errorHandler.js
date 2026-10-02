@@ -3,9 +3,14 @@ const Sentry = require("@sentry/node");
 function errorHandler(err, req, res, next) {
   // eslint-disable-next-line no-unused-vars
   const statusCode = res.statusCode && res.statusCode !== 200 ? res.statusCode : err.statusCode || 500;
-  const message = err.message || "Internal Server Error";
+  const isServerError = statusCode >= 500;
+  // 5xx messages can contain internals (driver errors, file paths) — only
+  // client errors (4xx) pass their message through in production.
+  const message = isServerError && process.env.NODE_ENV === "production"
+    ? "Internal Server Error"
+    : err.message || "Internal Server Error";
 
-  if (process.env.SENTRY_DSN) {
+  if (process.env.SENTRY_DSN && isServerError) {
     Sentry.captureException(err);
   }
 

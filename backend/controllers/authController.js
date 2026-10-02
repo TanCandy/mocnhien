@@ -30,7 +30,10 @@ function appendAuthCookie(res, token) {
 //  - User can log in immediately after registering
 // =============================================
 async function register(req, res) {
-  const { name, email, password, role, phoneNumber, primaryAddress } = req.body || {};
+  // `role` is deliberately NOT read from the body — public registration always
+  // creates a regular user. Admins are created via `npm run create-admin` or
+  // promoted by an existing admin.
+  const { name, email, password, phoneNumber, primaryAddress } = req.body || {};
   if (!name || !email || !password) {
     return res.status(400).json({ message: "name, email, and password are required." });
   }
@@ -56,7 +59,7 @@ async function register(req, res) {
     name: String(name).trim(),
     email: normalizedEmail,
     password,
-    role: role === "admin" ? "admin" : "user",
+    role: "user",
     phoneNumber: String(phoneNumber).trim(),
     primaryAddress: String(primaryAddress).trim(),
   });

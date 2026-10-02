@@ -1,61 +1,53 @@
-# Docker Compose for local production-like runs.
-# Usage:
-#   1. Create a .env file (NOT committed) with: JWT_SECRET=... ALLOWED_ORIGINS=...
-#   2. docker compose up --build
+# Production stack for a single VPS: app + MongoDB + Caddy (automatic HTTPS).
+#
+#   cp .env.production.example .env    # then fill it in
+#   docker compose up -d --build
+#
+# Full guide: DEPLOY.md
 
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        # Override at build time if your API is hosted elsewhere
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
     image: moc-nhien-authentic:latest
     container_name: moc-nhien-app
     restart: unless-stopped
-    ports:
-      # Host:Container — change host port if 3000 is taken
-      - "${APP_PORT:-3000}:3000"
+    # All application settings (JWT, bank account, SePay, Google Sheet, email…)
+    env_file: .env
     environment:
       NODE_ENV: production
       PORT: 3000
-      MONGODB_URI: ${MONGODB_URI:?MONGODB_URI must be set (e.g. mongodb://mongo:27017/moc-nhien)}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
-      JWT_ISSUER: ${JWT_ISSUER:-moc-nhien-authentic}
-      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
-      QUOTE_EXCHANGE_RATE_VND_PER_USD: ${QUOTE_EXCHANGE_RATE_VND_PER_USD:-23000}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set (comma-separated list of allowed origins)}
-      EMAIL_USER: ${EMAIL_USER:-}
-      EMAIL_PASS: ${EMAIL_PASS:-}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      RESEND_FROM: ${RESEND_FROM:-}
-      CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
+      TZ: Asia/Ho_Chi_Minh
+      # One reverse-proxy hop (Caddy) — needed for correct client IPs in rate limiting
+      TRUST_PROXY: "1"
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:?set MONGO_ROOT_USER in .env}:${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}@mongo:27017/${MONGO_DB:-moc-nhien}?authSource=admin
+    # Not published on the host: only Caddy reaches it over the internal network.
+    expose:
+      - "3000"
     depends_on:
       mongo:
         condition: service_healthy
     networks:
       - moc-network
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   mongo:
     image: mongo:7
     container_name: moc-nhien-mongo
     restart: unless-stopped
-    ports:
-      # Exposed only to host for debugging tools (e.g. Compass).
-      # App reaches mongo over the internal network.
-      - "${MONGO_PORT:-27017}:27017"
+    # Authentication is always on. No published port — never expose MongoDB to
+    # the internet (Docker port mappings bypass ufw). For Compass, use an SSH
+    # tunnel: see DEPLOY.md.
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?set MONGO_ROOT_USER in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
       MONGO_INITDB_DATABASE: ${MONGO_DB:-moc-nhien}
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - mongo_data:/data/db
     networks:
@@ -66,10 +58,35 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: moc-nhien-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env (e.g. shop.example.com)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - moc-network
+    logging: *logging
 
 volumes:
   mongo_data:
     name: moc-nhien-mongo-data
+  caddy_data:
+    name: moc-nhien-caddy-data
+  caddy_config:
+    name: moc-nhien-caddy-config
 
 networks:
   moc-network:
