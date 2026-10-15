@@ -1,0 +1,65 @@
+# Render Blueprint — one free web service built from the Dockerfile.
+# Database: MongoDB Atlas (set MONGODB_URI in the Render dashboard).
+#
+# Deploy: Render dashboard → New → Blueprint → pick this repo.
+# Values marked `sync: false` are asked for on the first deploy and never
+# stored in git. See DEPLOY.md → "Render (free tier)".
+services:
+  - type: web
+    name: mocnhien
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render terminates TLS in front of the app: one proxy hop, so per-IP
+      # rate limiting sees the real client IP.
+      - key: TRUST_PROXY
+        value: "1"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: JWT_ISSUER
+        value: moc-nhien-authentic
+      - key: BCRYPT_SALT_ROUNDS
+        value: "12"
+      - key: QUOTE_EXCHANGE_RATE_VND_PER_USD
+        value: "23000"
+
+      # ── Asked for on first deploy ──────────────────────────────────────────
+      - key: MONGODB_URI
+        sync: false
+      # Public URL of the service, e.g. https://mocnhien.onrender.com
+      # (password-reset links + CORS).
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: PAYMENT_BANK_BIN
+        sync: false
+      - key: PAYMENT_BANK_NAME
+        sync: false
+      - key: PAYMENT_ACCOUNT_NUMBER
+        sync: false
+      - key: PAYMENT_ACCOUNT_NAME
+        sync: false
+      # Optional — leave empty to turn the feature off.
+      - key: SEPAY_WEBHOOK_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
