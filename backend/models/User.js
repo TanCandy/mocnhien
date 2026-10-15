@@ -14,7 +14,7 @@ const userSchema = new mongoose.Schema(
     passwordResetToken: { type: String, default: null, index: true, sparse: true },
     passwordResetExpires: { type: Date, default: null },
   },
-  { timestamps: { createdAt: "createdAt", updatedAt: false } }
+  { timestamps: true }
 );
 
 // REMOVED: isVerified, otpCode, otpExpires, otpAttempts (no email verification)

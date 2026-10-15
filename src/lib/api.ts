@@ -22,7 +22,7 @@ async function request(path: string, init: RequestInit = {}) {
     console.error("[API] Failed to connect to backend at:", url);
     console.error("[API] Make sure backend is running: cd backend && npm run dev");
     console.error("[API] Error:", networkErr);
-    throw new Error("Cannot connect to backend. Please start the backend server.");
+    throw new Error("Network error: Cannot connect to backend. Please start the backend server.");
   }
 
   let data: any = {};

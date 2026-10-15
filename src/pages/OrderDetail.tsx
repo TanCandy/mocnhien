@@ -1,10 +1,108 @@
-import { Download, Check, Truck, Gavel, Home, History, Package, Wallet, Verified, Headset, ArrowLeft, MapPin, Calendar, Weight, Tag } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Truck, History, Package, Wallet, Headset, ArrowLeft, MapPin, Weight, Tag, Loader2, AlertTriangle, QrCode } from "lucide-react";
 import { useParams, Link } from "react-router-dom";
-import { MOCK_ORDERS } from "../data/mockData";
+import { api } from "../lib/api";
+import { formatVND, formatUSD } from "../lib/formatters";
+import { getWarehouseAddress } from "../lib/orderUtils";
+import PaymentQR from "../components/PaymentQR";
+
+interface TimelineEvent {
+  status: string;
+  location: string;
+  time: string;
+  description: string;
+  completed: boolean;
+}
+
+interface OrderData {
+  id: string;
+  status: string;
+  date: string;
+  warehouseAddress?: string;
+  staffName?: string;
+  weight?: string;
+  category?: string;
+  productName?: string;
+  productType?: string;
+  priceUSD?: number;
+  priceVND?: number;
+  exchangeRate?: number;
+  paidAmount?: number;
+  remainingAmount?: number;
+  paymentStatus?: string;
+  uspsTracking?: string;
+  timeline: TimelineEvent[];
+}
+
+const capitalise = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 export default function OrderDetail() {
   const { id } = useParams();
-  const order = MOCK_ORDERS.find(o => o.id === id) || MOCK_ORDERS[0];
+  const [order, setOrder] = useState<OrderData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [showQR, setShowQR] = useState(false);
+
+  const loadOrder = useCallback(() => {
+    if (!id) return;
+    api
+      .get(`/api/orders/track?code=${encodeURIComponent(id)}`)
+      .then((data) => {
+        if (data.order) setOrder(data.order);
+      })
+      .catch(() => {});
+  }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setOrder(null);
+    api
+      .get(`/api/orders/track?code=${encodeURIComponent(id || "")}`)
+      .then((data) => {
+        if (cancelled) return;
+        if (data.order) setOrder(data.order);
+        else setError("Order not found.");
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setError(err.status === 404 ? "Order not found." : err.message || "Failed to load order.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto px-8 pb-20 flex items-center justify-center gap-3 py-32 text-on-surface-variant" role="status">
+        <Loader2 className="w-6 h-6 animate-spin" />
+        Loading order…
+      </div>
+    );
+  }
+
+  if (error || !order) {
+    return (
+      <div className="max-w-xl mx-auto px-8 pb-20 py-24 text-center space-y-6">
+        <AlertTriangle className="w-12 h-12 text-error mx-auto" />
+        <h1 className="text-3xl font-headline text-on-surface">Order unavailable</h1>
+        <p className="text-on-surface-variant" role="alert">{error || "Order not found."}</p>
+        <Link to="/dashboard" className="inline-flex items-center gap-2 text-primary font-bold hover:underline">
+          <ArrowLeft className="w-4 h-4" />
+          Back to Dashboard
+        </Link>
+      </div>
+    );
+  }
+
+  const warehouse = getWarehouseAddress(order) || "—";
+  const hasPrice = (order.priceUSD || 0) > 0;
+  const timeline = order.timeline || [];
 
   return (
     <div className="max-w-7xl mx-auto px-8 pb-20">
@@ -18,18 +116,14 @@ export default function OrderDetail() {
           <h1 className="text-5xl font-headline text-on-surface">{order.id}</h1>
           <div className="mt-4 flex items-center gap-3">
             <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-sm font-semibold ${
-              order.status === 'delivered' ? "bg-green-100 text-green-800" : "bg-primary-container text-on-primary-container"
+              order.status === "delivered" ? "bg-green-100 text-green-800" : "bg-primary-container text-on-primary-container"
             }`}>
               <Truck className="mr-2 w-4 h-4 fill-current" />
-              {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+              {capitalise(order.status)}
             </span>
-            <span className="text-on-surface-variant text-sm font-medium">Estimated Delivery: {order.date}</span>
+            <span className="text-on-surface-variant text-sm font-medium">Ordered: {order.date}</span>
           </div>
         </div>
-        <button className="flex items-center gap-2 bg-primary text-on-primary px-8 py-4 rounded-full font-bold hover:bg-primary/90 shadow-lg transition-all active:scale-95">
-          <Download className="w-5 h-5" />
-          Download Invoice
-        </button>
       </header>
 
       <section className="mb-16 bg-surface-container-low rounded-[20px] p-8 md:p-12">
@@ -39,21 +133,21 @@ export default function OrderDetail() {
               <MapPin className="w-4 h-4" />
               <span className="text-xs font-bold uppercase tracking-widest">Warehouse Address</span>
             </div>
-            <p className="font-headline font-bold text-primary text-lg">{order.origin} → {order.destination}</p>
+            <p className="font-headline font-bold text-primary text-lg">{warehouse}</p>
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-outline">
               <Weight className="w-4 h-4" />
               <span className="text-xs font-bold uppercase tracking-widest">Weight</span>
             </div>
-            <p className="font-headline font-bold text-primary text-lg">{order.weight}</p>
+            <p className="font-headline font-bold text-primary text-lg">{order.weight || "—"}</p>
           </div>
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-outline">
               <Tag className="w-4 h-4" />
               <span className="text-xs font-bold uppercase tracking-widest">Category</span>
             </div>
-            <p className="font-headline font-bold text-primary text-lg">{order.category}</p>
+            <p className="font-headline font-bold text-primary text-lg capitalize">{order.category || "general"}</p>
           </div>
         </div>
       </section>
@@ -66,7 +160,7 @@ export default function OrderDetail() {
               Detailed Tracking History
             </h2>
             <div className="relative before:absolute before:left-6 before:top-4 before:bottom-4 before:w-px before:bg-outline-variant">
-              {order.timeline.map((event, i) => (
+              {timeline.map((event, i) => (
                 <div key={i} className="relative pl-16 pb-10">
                   <div className={`absolute rounded-full border-4 border-surface ${
                     event.completed ? "left-4 top-1 w-4 h-4 bg-primary ring-4 ring-primary-container/20" : "left-5 top-1 w-2 h-2 bg-outline"
@@ -85,14 +179,6 @@ export default function OrderDetail() {
               ))}
             </div>
           </section>
-          <div className="rounded-[20px] overflow-hidden shadow-sm h-64 grayscale contrast-125 opacity-80">
-            <img
-              className="w-full h-full object-cover"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAcR7bjjt5K9jYatxVBxsY3AfYQrW3aFecCIhGHKcM78M5RJM-ZGoeD_0Sa9EbC0NX4Si8U6ML3GNyuPTgQVpN0vYqOZqgQ8pREUA70Cra3etpujAJR9ezLmqkbHGENfK1gB40fzjCFZtgXtFbpm0bW52_LMY4yH1pXss-fXLOmj8DkskZwkw8Z1PbI1XdbeD3uYR46iw727LkW0FaGntgJdhGMrY76b-F7hW27b8QsvpgsNT9m1sedorHVWJYZFwv8poO4823iKQ"
-              alt="Map Location"
-              referrerPolicy="no-referrer"
-            />
-          </div>
         </div>
 
         <div className="space-y-8">
@@ -105,17 +191,23 @@ export default function OrderDetail() {
                 </div>
                 <div>
                   <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">Contents</p>
-                  <p className="text-on-surface font-medium">{order.category} Items</p>
+                  <p className="text-on-surface font-medium">{order.productName || "—"}</p>
                 </div>
               </div>
               <div>
                 <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">Nhân viên</p>
-                <p className="text-on-surface font-medium">N/A</p>
+                <p className="text-on-surface font-medium">{order.staffName || "N/A"}</p>
               </div>
+              {order.uspsTracking && (
+                <div>
+                  <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">USPS Tracking</p>
+                  <p className="text-on-surface font-medium break-all">{order.uspsTracking}</p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">Weight</p>
-                  <p className="text-on-surface font-medium">{order.weight}</p>
+                  <p className="text-on-surface font-medium">{order.weight || "—"}</p>
                 </div>
                 <div>
                   <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">Status</p>
@@ -124,7 +216,7 @@ export default function OrderDetail() {
               </div>
               <div className="pt-6 border-t border-outline-variant/20">
                 <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-2">Declared Value</p>
-                <p className="text-2xl font-headline text-primary">{order.price} USD</p>
+                <p className="text-2xl font-headline text-primary">{hasPrice ? formatUSD(order.priceUSD) : "—"}</p>
               </div>
             </div>
           </div>
@@ -133,23 +225,50 @@ export default function OrderDetail() {
             <h3 className="text-2xl font-headline mb-6">Billing Summary</h3>
             <div className="space-y-4">
               <div className="flex justify-between text-sm opacity-80">
-                <span>Shipping Fees</span>
-                <span>$38.50</span>
+                <span>Price (USD)</span>
+                <span>{hasPrice ? formatUSD(order.priceUSD) : "—"}</span>
               </div>
               <div className="flex justify-between text-sm opacity-80">
-                <span>Insurance (Premium)</span>
-                <span>$5.18</span>
+                <span>Exchange rate</span>
+                <span>{order.exchangeRate ? `${order.exchangeRate.toLocaleString("vi-VN")} đ` : "—"}</span>
+              </div>
+              <div className="flex justify-between text-sm opacity-80">
+                <span>Paid</span>
+                <span>{formatVND(order.paidAmount || 0)}</span>
+              </div>
+              <div className="flex justify-between text-sm opacity-80">
+                <span>Remaining</span>
+                <span>{formatVND(order.remainingAmount || 0)}</span>
               </div>
               <div className="pt-4 border-t border-on-primary/20 flex justify-between items-end">
-                <span className="font-bold">Total Paid</span>
-                <span className="text-3xl font-headline">{order.price}</span>
+                <span className="font-bold">Total</span>
+                <span className="text-3xl font-headline">{formatVND(order.priceVND || 0)}</span>
               </div>
               <div className="pt-4 flex items-center gap-2 text-xs opacity-70">
-                <Verified className="w-4 h-4 fill-current" />
-                <span>Payment confirmed via Corporate Account</span>
+                <Wallet className="w-4 h-4" />
+                <span className="capitalize">Payment status: {order.paymentStatus || "pending"}</span>
               </div>
             </div>
           </div>
+
+          {order.remainingAmount && order.remainingAmount > 0 ? (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowQR((prev) => !prev)}
+                className="w-full py-3 px-4 rounded-[20px] bg-secondary-container text-on-secondary-container font-bold text-sm shadow hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+              >
+                <QrCode className="w-4 h-4" />
+                {showQR ? "Ẩn mã VietQR" : "Thanh toán ngay (VietQR)"}
+              </button>
+            </div>
+          ) : null}
+
+          {showQR && (
+            <div className="bg-surface-container-lowest rounded-[20px] p-6 shadow-md border border-outline-variant/10">
+              <PaymentQR orderId={order.id} onPaid={loadOrder} />
+            </div>
+          )}
 
           <div className="bg-primary-container/20 text-on-primary-container rounded-[20px] p-6 flex items-center gap-4">
             <Headset className="w-10 h-10" />

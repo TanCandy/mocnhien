@@ -1,10 +1,12 @@
 import { FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { setSessionUser, setToken } from "../lib/auth";
+import { setToken } from "../lib/auth";
+import { useUser } from "../context/UserContext";
 
 export default function Register() {
   const navigate = useNavigate();
+  const { setCurrentUser } = useUser();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -50,7 +52,7 @@ export default function Register() {
       const data = await api.post("/api/auth/register", { name, email, password, phoneNumber, primaryAddress });
       console.log("[Register] Success:", data.user);
       setToken(data.token);
-      setSessionUser(data.user);
+      setCurrentUser(data.user);
       navigate("/profile");
     } catch (err: any) {
       console.error("[Register] Error:", err.message);

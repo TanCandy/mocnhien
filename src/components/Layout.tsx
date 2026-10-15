@@ -16,6 +16,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const navLinks = [
     { name: "Home", path: "/" },
+    { name: "Calculator", path: "/calculator" },
     { name: "Tracking", path: "/tracking" },
     { name: "Dashboard", path: "/dashboard" },
     { name: "Profile", path: "/profile" },

@@ -131,7 +131,11 @@ async function recordIncomingTransfer({
       // crediting the order, finish the job now (idempotent).
       const existing = await Payment.findOne({ provider, providerTxnId: String(providerTxnId) });
       if (existing?.status === "matched" && existing.order) {
-        await applyPaymentToOrder(existing.order, existing);
+        try {
+          await applyPaymentToOrder(existing.order, existing);
+        } catch (applyErr) {
+          logger.warn({ err: applyErr.message }, "[Payments] applyPaymentToOrder on duplicate ignored");
+        }
       }
       logger.info({ provider, providerTxnId }, "[Payments] duplicate webhook ignored");
       return { duplicate: true };
@@ -185,7 +189,11 @@ async function assignPayment(paymentId, orderCode, adminUserId) {
     const existing = await Payment.findById(paymentId);
     if (existing?.status === "matched" && existing.order) {
       // Finish a previous assignment that died before crediting (idempotent).
-      await applyPaymentToOrder(existing.order, existing);
+      try {
+        await applyPaymentToOrder(existing.order, existing);
+      } catch (applyErr) {
+        logger.warn({ err: applyErr.message }, "[Payments] applyPaymentToOrder on existing assignment failed");
+      }
     }
     const err = new Error(existing ? "This transfer is already assigned." : "Payment not found.");
     err.statusCode = existing ? 409 : 404;

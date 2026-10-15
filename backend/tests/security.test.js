@@ -166,6 +166,29 @@ describe("admin order payment math", () => {
     const res = await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "bogus" });
     expect(res.status).toBe(400);
   });
+
+  it("rejects an illegal backwards state transition (delivered -> pending) with 400", async () => {
+    const created = await request(app).post("/api/orders/admin").set(as(admin)).send(orderPayload);
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "approved" });
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "shipping" });
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "delivered" });
+
+    const res = await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "pending" });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("Cannot transition order status from 'delivered' to 'pending'");
+    await Order.deleteOne({ _id: created.body.order._id });
+  });
+
+  it("rejects jumping backwards from shipping to pending with 400", async () => {
+    const created = await request(app).post("/api/orders/admin").set(as(admin)).send(orderPayload);
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "approved" });
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "shipping" });
+
+    const res = await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "pending" });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("Cannot transition order status from 'shipping' to 'pending'");
+    await Order.deleteOne({ _id: created.body.order._id });
+  });
 });
 
 describe("GET /api/orders/export", () => {
@@ -191,13 +214,21 @@ describe("GET /api/orders/export", () => {
 
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(res.body);
-    const ws = wb.getWorksheet("Orders");
-    expect(ws.rowCount).toBe(count + 2); // header + orders + totals
+    // One "ĐƠN THÁNG n" sheet per month (these orders were all created now) + Payments.
+    const monthSheets = wb.worksheets.filter((w) => w.name.startsWith("ĐƠN THÁNG"));
+    expect(monthSheets.length).toBeGreaterThan(0);
+    let exported = 0;
+    for (const ws of monthSheets) {
+      ws.eachRow((row, n) => { if (n >= 4 && row.getCell(2).value) exported += 1; });
+    }
+    expect(exported).toBe(count);
     expect(wb.getWorksheet("Payments")).toBeTruthy();
   });
 
   it("filters by status", async () => {
     const created = await request(app).post("/api/orders/admin").set(as(admin)).send(orderPayload);
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "approved" });
+    await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "shipping" });
     await request(app).put(`/api/orders/${created.body.order._id}`).set(as(admin)).send({ status: "delivered" });
 
     const res = await request(app).get("/api/orders/export?status=delivered").set(as(admin)).buffer(true)
@@ -208,9 +239,10 @@ describe("GET /api/orders/export", () => {
       });
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(res.body);
-    const ws = wb.getWorksheet("Orders");
-    expect(ws.rowCount).toBe(3); // header + 1 delivered order + totals
-    expect(ws.getRow(2).getCell(2).value).toBe(created.body.order.orderCode);
+    const ws = wb.worksheets.find((w) => w.name.startsWith("ĐƠN THÁNG"));
+    expect(ws.getRow(4).getCell(2).value).toBe(created.body.order.orderCode);
+    expect(ws.getRow(5).getCell(2).value).toBeNull(); // only the one delivered order
+    expect(ws.getCell("A2").value).toBe("Tổng (1 đơn)");
   });
 });
 

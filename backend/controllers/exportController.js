@@ -8,7 +8,6 @@ const STATUSES = ["pending", "approved", "shipping", "delivered"];
 const PAYMENT_STATUSES = ["pending", "paid"];
 const TIME_ZONE = "Asia/Ho_Chi_Minh";
 const VND = '#,##0" ₫"';
-const USD = '"$"#,##0.00';
 
 /** Shared filter for export + resync: ?status=&paymentStatus=&from=YYYY-MM-DD&to=YYYY-MM-DD */
 function buildOrderFilter(query) {
@@ -45,59 +44,215 @@ function styleHeader(sheet) {
   sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: sheet.columnCount } };
 }
 
-// ============================================
-// Admin — GET /api/orders/export(.xlsx)
-// ============================================
-async function exportOrders(req, res) {
-  const filter = buildOrderFilter(req.query);
-  const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
-  const orderIds = orders.map((o) => o._id);
-  const payments = await Payment.find({ order: { $in: orderIds } }).select("-raw").sort({ createdAt: -1 }).lean();
+/** Sanitize values to prevent Excel Formula Injection (=, +, -, @, \t, \r) */
+function sanitizeCellString(val) {
+  if (typeof val !== "string") return val;
+  if (/^[=+\-@\t\r]/.test(val)) {
+    return `'${val}`;
+  }
+  return val;
+}
 
+// ── Monthly "ĐƠN THÁNG n" sheets, laid out like the shop's Google Sheet ────────
+// Layout, colours and number formats are copied from the "Tiền hàng MN" template:
+//   row 1  block titles          row 2  column totals
+//   row 3  column headers        row 4+ one order per row
+const USD_FMT = "[$$]#,##0.00";
+const VND_FMT = "#,##0 [$đ-42A]";
+const MONEY_FMT = "#,##0.00";
+const DATE_FMT = "dd/MM/yyyy";
+const FONT = "Arial";
+const SPARE_ROWS = 30; // styled empty rows after the data, for typing the PD/WEMC blocks by hand
+const HEADER_ROW = 3;
+const FIRST_DATA_ROW = 4;
+
+const COLORS = {
+  cream: "FFFFF2CC",
+  peach: "FFFCE5CD",
+  green: "FF6AA84F",
+  pink: "FFEA9999",
+  blue: "FFCFE2F3",
+  head: "FF356854",
+  headDark: "FF274E13",
+};
+
+// fill: data-row background (null = white) · total: gets a SUM in row 2 · dark: darker header
+const SHEET_COLUMNS = [
+  { header: "Ngày", key: "date", width: 12, fill: "peach", fmt: DATE_FMT, center: true },
+  { header: "Mã Đơn", key: "orderCode", width: 19, fill: "peach" },
+  { header: "PAGE/SALE", key: "pageSale", width: 14, fill: "peach", list: "PAGE,SALE" },
+  { header: "NƯỚC", key: "country", width: 14, fill: "peach", list: "Mỹ,ANH,ÚC,INDO,NHẬT,HÀN,SPAIN" },
+  { header: "Tên Nhân Viên", key: "staffName", width: 16, fill: "peach" },
+  { header: "Tên Sản Phẩm/link", key: "productName", width: 34, fill: "peach" },
+  { header: "USD", key: "usd", width: 13, fill: "peach", fmt: USD_FMT, total: true },
+  { header: "TỶ GIÁ", key: "exchangeRate", width: 12, fill: "peach", fmt: "#,##0.00 [$đ-42A]" },
+  { header: "VND", key: "vnd", width: 15, fill: "peach", fmt: "#,##0", total: true, totalFmt: VND_FMT },
+  { header: "CỌC", key: "paidAmount", width: 15, fill: "peach", fmt: VND_FMT, total: true },
+  { header: "NỢ", key: "remainingAmount", width: 15, fill: "peach", fmt: VND_FMT, total: true, center: true },
+  { header: "Phụ Thu", key: "surcharge", width: 13, fill: "peach", fmt: "#,##0.00 [$đ-42A]", total: true, dark: true },
+  { header: "Số KG", key: "weightKg", width: 10, fill: "peach", fmt: MONEY_FMT, total: true, dark: true },
+  { header: "TIỀN KG", key: "kgFee", width: 14, fill: "peach", fmt: "#,##0.00 [$đ-42A]", total: true, dark: true, center: true },
+  { header: "Tỷ Giá Mua ", key: "buyRate", width: 15, fill: null, center: true },
+  { header: "USD ", key: "buyUsd", width: 15, fill: null, fmt: USD_FMT, total: true, center: true },
+  { header: "Tiền VND", key: "buyVnd", width: 15, fill: null, fmt: MONEY_FMT, total: true, center: true },
+  { header: "Lời tỷ giá", key: "buyProfit", width: 14, fill: null, total: true, center: true },
+  { header: "TỶ GIÁ 2", key: "wRate", width: 14, fill: "blue", fmt: VND_FMT },
+  { header: "USD  2", key: "wUsd", width: 13.75, fill: "blue", fmt: USD_FMT, total: true },
+  { header: "VND 2", key: "wVnd", width: 13.25, fill: "blue", fmt: VND_FMT, total: true },
+  { header: "CỌC 2", key: "wDeposit", width: 13, fill: "blue", fmt: VND_FMT, total: true },
+  { header: "CÒN NỢ", key: "wDebt", width: 13, fill: "blue", total: true },
+  { header: "LỜI TỶ GIÁ", key: "wProfit", width: 13.6, fill: "blue", total: true },
+  { header: "CK", key: "ck", width: 13.6, fill: null, center: true },
+];
+const COLUMN_COUNT = SHEET_COLUMNS.length;
+
+// Row 1 / row 2 background per column (copied from the template).
+const TITLE_FILL = (c) => {
+  if (c <= 10) return COLORS.cream;
+  if (c <= 13) return COLORS.peach;
+  if (c <= 18) return COLORS.green;
+  if (c <= 23) return COLORS.pink;
+  return COLORS.cream;
+};
+const THIN = { style: "thin", color: { argb: "FF000000" } };
+const BORDER = { top: THIN, left: THIN, bottom: THIN, right: THIN };
+const solid = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
+
+/** Calendar parts of an instant in Vietnam time. */
+function vnParts(date) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", { timeZone: TIME_ZONE, year: "numeric", month: "numeric", day: "numeric" })
+      .formatToParts(date).map((x) => [x.type, x.value])
+  );
+  return { year: Number(p.year), month: Number(p.month), day: Number(p.day) };
+}
+
+function colLetter(index) {
+  let n = index;
+  let s = "";
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function buildMonthSheet(wb, name, orders) {
+  const ws = wb.addWorksheet(name, { views: [{ state: "frozen", ySplit: HEADER_ROW }] });
+  SHEET_COLUMNS.forEach((col, i) => { ws.getColumn(i + 1).width = col.width; });
+
+  // Row 1 — block titles
+  ws.getRow(1).height = 37.5;
+  for (let c = 1; c <= COLUMN_COUNT; c++) {
+    const cell = ws.getCell(1, c);
+    cell.fill = solid(TITLE_FILL(c));
+    cell.font = { name: FONT, bold: true };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+  }
+  ws.getCell("A1").value = "KHÁCH BANK MUA HÀNG";
+  ws.getCell("N1").value = "MUA HÀNG BÊN PD TIEUBANGSG/ TN-KH/Dieu";
+  ws.getCell("R1").value = "MUA HÀNG BÊN WEMC ANH MẠNH ";
+  ws.mergeCells("A1:I1");
+  ws.mergeCells("L1:M1");
+  ws.mergeCells("N1:Q1");
+  ws.mergeCells("R1:W1");
+
+  // Row 3 — headers
+  ws.getRow(HEADER_ROW).height = 22.5;
+  SHEET_COLUMNS.forEach((col, i) => {
+    const cell = ws.getCell(HEADER_ROW, i + 1);
+    cell.value = col.header;
+    cell.fill = solid(col.dark ? COLORS.headDark : COLORS.head);
+    cell.font = { name: FONT, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = BORDER;
+  });
+  ws.autoFilter = { from: { row: HEADER_ROW, column: 1 }, to: { row: HEADER_ROW, column: COLUMN_COUNT } };
+
+  // Rows 4+ — one order per row, oldest first (as in the template), then spare rows
+  const sorted = [...orders].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const totals = {};
+  const lastRow = FIRST_DATA_ROW + sorted.length + SPARE_ROWS - 1;
+
+  for (let r = FIRST_DATA_ROW; r <= lastRow; r++) {
+    const order = sorted[r - FIRST_DATA_ROW];
+    const row = order ? sheets.orderToRow(order) : null;
+    ws.getRow(r).height = 22.5;
+    SHEET_COLUMNS.forEach((col, i) => {
+      const cell = ws.getCell(r, i + 1);
+      cell.font = { name: FONT };
+      cell.alignment = { vertical: "middle", horizontal: col.center ? "center" : undefined };
+      if (col.fill) cell.fill = solid(COLORS[col.fill]);
+      if (col.fmt) cell.numFmt = col.fmt;
+      cell.border = BORDER;
+      if (col.list) cell.dataValidation = { type: "list", allowBlank: true, formulae: [`"${col.list}"`] };
+      if (!row) return;
+
+      let value;
+      if (col.key === "date") {
+        const { year, month, day } = vnParts(new Date(order.createdAt));
+        value = new Date(Date.UTC(year, month - 1, day));
+      } else if (col.key === "weightKg") {
+        value = Number(order.weightKg) > 0 ? Number(order.weightKg) : null;
+      } else if (col.key === "productName") {
+        value = row.productName;
+        if (row.productLink && /^https?:\/\//i.test(row.productLink)) {
+          value = { text: row.productName || row.productLink, hyperlink: row.productLink };
+        } else if (row.productLink) {
+          value = `${row.productName} ${row.productLink}`.trim();
+        }
+      } else {
+        value = row[col.key];
+      }
+      if (value === undefined || value === null || value === "") return;
+      cell.value = typeof value === "string" ? sanitizeCellString(value) : value;
+      if (col.total && typeof value === "number") totals[col.key] = (totals[col.key] || 0) + value;
+    });
+  }
+
+  // Row 2 — totals for every numeric column (the PD/WEMC columns total what you type in)
+  ws.getRow(2).height = 37.5;
+  for (let c = 1; c <= COLUMN_COUNT; c++) {
+    const col = SHEET_COLUMNS[c - 1];
+    const cell = ws.getCell(2, c);
+    cell.fill = solid(TITLE_FILL(c));
+    cell.font = { name: FONT, bold: c <= 10 || (c >= 14 && c <= 23) };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+    if (!col.total) continue;
+    const letter = colLetter(c);
+    cell.value = { formula: `SUM(${letter}${FIRST_DATA_ROW}:${letter}${lastRow})`, result: totals[col.key] || 0 };
+    cell.numFmt = col.totalFmt || col.fmt || MONEY_FMT;
+  }
+  ws.getCell("A2").value = `Tổng (${sorted.length} đơn)`;
+  ws.getCell("A2").alignment = { horizontal: "left", vertical: "middle" };
+  return ws;
+}
+
+/** Group orders by Vietnam calendar month → [{ year, month, name, orders }], newest month first. */
+function groupByMonth(orders, now = new Date()) {
+  const groups = new Map();
+  for (const order of orders) {
+    const { year, month } = vnParts(new Date(order.createdAt || now));
+    const key = `${year}-${String(month).padStart(2, "0")}`;
+    if (!groups.has(key)) groups.set(key, { year, month, orders: [] });
+    groups.get(key).orders.push(order);
+  }
+  if (groups.size === 0) {
+    const { year, month } = vnParts(now);
+    groups.set(`${year}-${String(month).padStart(2, "0")}`, { year, month, orders: [] });
+  }
+  const list = [...groups.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([, g]) => g);
+  const multiYear = new Set(list.map((g) => g.year)).size > 1;
+  return list.map((g) => ({ ...g, name: multiYear ? `ĐƠN THÁNG ${g.month}-${g.year}` : `ĐƠN THÁNG ${g.month}` }));
+}
+
+function buildWorkbook(orders, payments) {
   const wb = new ExcelJS.Workbook();
   wb.creator = "Moc Nhien";
   wb.created = new Date();
 
-  // ── Orders ──────────────────────────────────────────────────────────────
-  const ws = wb.addWorksheet("Orders");
-  ws.columns = [
-    { header: "Ngày", key: "date", width: 12 },
-    { header: "Mã đơn", key: "orderCode", width: 20 },
-    { header: "Nhân viên", key: "staffName", width: 16 },
-    { header: "Sản phẩm", key: "productName", width: 32 },
-    { header: "Link", key: "productLink", width: 30 },
-    { header: "Kho", key: "warehouse", width: 28 },
-    { header: "Khách hàng", key: "customerName", width: 22 },
-    { header: "Liên hệ", key: "contactValue", width: 24 },
-    { header: "USD", key: "usd", width: 12, style: { numFmt: USD } },
-    { header: "Tỷ giá", key: "exchangeRate", width: 10, style: { numFmt: "#,##0" } },
-    { header: "Tổng VND", key: "vnd", width: 16, style: { numFmt: VND } },
-    { header: "Đã trả", key: "paidAmount", width: 16, style: { numFmt: VND } },
-    { header: "% trả", key: "paymentPercentage", width: 8 },
-    { header: "Còn lại", key: "remainingAmount", width: 16, style: { numFmt: VND } },
-    { header: "Thanh toán", key: "paymentStatus", width: 12 },
-    { header: "Trạng thái", key: "status", width: 12 },
-    { header: "USPS tracking", key: "trackingNumber", width: 22 },
-    { header: "Tạo lúc (UTC)", key: "createdAt", width: 22 },
-  ];
-  for (const order of orders) {
-    const row = sheets.orderToRow(order);
-    const added = ws.addRow(row);
-    if (row.productLink && /^https?:\/\//i.test(row.productLink)) {
-      added.getCell("productLink").value = { text: row.productLink, hyperlink: row.productLink };
-    }
-  }
-  if (orders.length > 0) {
-    const first = 2;
-    const last = orders.length + 1;
-    const totals = ws.addRow({ orderCode: `Tổng (${orders.length} đơn)` });
-    for (const key of ["vnd", "paidAmount", "remainingAmount"]) {
-      const col = ws.getColumn(key).letter;
-      totals.getCell(key).value = { formula: `SUM(${col}${first}:${col}${last})` };
-    }
-    totals.font = { bold: true };
-  }
-  styleHeader(ws);
+  for (const group of groupByMonth(orders)) buildMonthSheet(wb, group.name, group.orders);
 
   // ── Payments (bank transfers credited to these orders) ──────────────────
   const ps = wb.addWorksheet("Payments");
@@ -115,15 +270,28 @@ async function exportOrders(req, res) {
       when: (p.transactionDate || p.createdAt)
         ? new Date(p.transactionDate || p.createdAt).toLocaleString("vi-VN", { timeZone: TIME_ZONE })
         : "",
-      orderCode: p.orderCode || "",
+      orderCode: sanitizeCellString(p.orderCode || ""),
       amount: p.amount,
-      content: p.content,
-      gateway: p.gateway,
-      referenceCode: p.referenceCode,
+      content: sanitizeCellString(p.content || ""),
+      gateway: sanitizeCellString(p.gateway || ""),
+      referenceCode: sanitizeCellString(p.referenceCode || ""),
       manual: p.assignedBy ? "Có" : "",
     });
   }
   styleHeader(ps);
+  return wb;
+}
+
+// ============================================
+// Admin — GET /api/orders/export(.xlsx)
+// ============================================
+async function exportOrders(req, res) {
+  const filter = buildOrderFilter(req.query);
+  const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
+  const orderIds = orders.map((o) => o._id);
+  const payments = await Payment.find({ order: { $in: orderIds } }).select("-raw").sort({ createdAt: -1 }).lean();
+
+  const wb = buildWorkbook(orders, payments);
 
   const filename = `orders-${stamp()}.xlsx`;
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -148,4 +316,4 @@ async function resyncSheets(req, res) {
   return res.status(200).json({ message: `Synced ${result.sent} orders to Google Sheets.`, ...result });
 }
 
-module.exports = { exportOrders, resyncSheets, buildOrderFilter };
+module.exports = { exportOrders, resyncSheets, buildOrderFilter, buildWorkbook, groupByMonth };

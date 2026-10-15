@@ -131,6 +131,9 @@ export default function Profile() {
       });
 
       setProfile(updated.user);
+      if (updated.user) {
+        setCurrentUser(updated.user);
+      }
       setIsEditing(false);
       setSuccessData({
         title: "Profile Updated",

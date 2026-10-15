@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { env } = require("../config/env");
+const { logger } = require("../config/logger");
 const User = require("../models/User");
 
 function getTokenFromCookie(cookieHeader) {
@@ -15,7 +16,7 @@ function getTokenFromCookie(cookieHeader) {
 async function authMiddleware(req, res, next) {
   try {
     const header = req.headers.authorization;
-    let token = getTokenFromCookie(req.headers.cookie);
+    let token = req.cookies?.token || getTokenFromCookie(req.headers.cookie);
     if (!token && header) {
       const [scheme, headerToken] = header.split(" ");
       if (scheme === "Bearer" && headerToken) token = headerToken;
@@ -32,7 +33,11 @@ async function authMiddleware(req, res, next) {
     req.user = user;
     return next();
   } catch (err) {
-    return res.status(401).json({ message: "Unauthorized.", error: err.message });
+    if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError" || err.name === "NotBeforeError") {
+      return res.status(401).json({ message: "Unauthorized." });
+    }
+    logger.error({ err: err.message }, "[AuthMiddleware] database or internal error");
+    return res.status(503).json({ message: "Authentication service temporarily unavailable." });
   }
 }
 

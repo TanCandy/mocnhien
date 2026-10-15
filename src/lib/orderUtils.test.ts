@@ -4,7 +4,47 @@ import {
   getMongoOrderId,
   resolveContactDisplay,
   computeOrderVND,
+  buildOrderPayload,
 } from "./orderUtils";
+import { formatCurrencyInput, parseUSD } from "./formatters";
+
+describe("buildOrderPayload", () => {
+  const base = {
+    productType: "general",
+    productName: "Bag",
+    productLink: "",
+    warehouseAddress: "  1 WH  ",
+    staffName: " Lan ",
+    priceUSD: "1,299",
+    paidAmount: "",
+  };
+
+  it("sends the USD price as a number, not a comma-formatted string", () => {
+    expect(buildOrderPayload(base, 25000).priceUSD).toBe(1299);
+    expect(buildOrderPayload({ ...base, priceUSD: "1,234,567.8" }, 25000).priceUSD).toBe(1234567.8);
+  });
+
+  it("omits the price when blank or invalid", () => {
+    expect(buildOrderPayload({ ...base, priceUSD: "" }, 25000).priceUSD).toBeUndefined();
+    expect(buildOrderPayload({ ...base, priceUSD: "abc" }, 25000).priceUSD).toBeUndefined();
+  });
+
+  it("trims text fields and carries the exchange rate", () => {
+    const p = buildOrderPayload(base, 25000);
+    expect(p.warehouseAddress).toBe("1 WH");
+    expect(p.staffName).toBe("Lan");
+    expect(p.exchangeRate).toBe(25000);
+    expect(p.productLink).toBeUndefined();
+  });
+});
+
+describe("price input round-trip", () => {
+  it("formats then parses back to the same number", () => {
+    for (const n of ["1299", "1234567.8", "48.5", "999"]) {
+      expect(parseUSD(formatCurrencyInput(n))).toBe(Number(n));
+    }
+  });
+});
 
 describe("getWarehouseAddress", () => {
   it("prefers warehouseAddress when present", () => {
