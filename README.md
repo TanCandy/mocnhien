@@ -1,20 +1,56 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Mộc Nhiên Authentic
 
-# Run and deploy your AI Studio app
+Order management for a US → Vietnam purchasing and shipping service. Customers place and
+track orders. Staff and admins price orders, record payments, and update shipping status.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/923aaee8-65c0-458f-9de8-3c6e5fac5ca5
+- **Orders**: customer order requests, admin approval and pricing (USD × exchange rate → VND),
+  status timeline, USPS tracking numbers.
+- **Payments**:
+  - Each unpaid order shows a VietQR code with the outstanding amount and the order code pre-filled.
+  - With [SePay](https://sepay.vn) connected, incoming bank transfers are matched to orders
+    automatically, including partial payments.
+  - Transfers that can't be matched are listed in **Admin → Payments** for manual assignment.
+- **Spreadsheets**:
+  - **Admin → Manage Orders → Export Excel** downloads the filtered orders as `.xlsx`.
+  - An optional live Google Sheet mirror is available ([setup](integrations/google-sheets/README.md)).
+- **Accounts**: registration, login (httpOnly JWT cookie), password reset by email (Resend), and
+  admin/user roles.
 
-## Run Locally
+Stack: React 19 + Vite + Tailwind (frontend) · Express 5 + Mongoose (backend, `backend/`) · MongoDB.
 
-**Prerequisites:**  Node.js
+## Run locally
 
+Prerequisites: Node.js 20+ and a MongoDB instance (local, Docker, or Atlas).
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm install
+cd backend && npm install && cp .env.example .env && cd ..
+# edit backend/.env: MONGODB_URI and JWT_SECRET at minimum
+```
+
+Start the two processes in separate terminals:
+
+```bash
+cd backend && npm run dev     # API on http://localhost:4000
+npm run dev                   # site on http://localhost:3000 (proxies /api to :4000)
+```
+
+Create an admin account:
+
+```bash
+cd backend && npm run create-admin -- --email you@example.com
+```
+
+## Tests
+
+```bash
+npm run lint && npm test           # frontend typecheck + tests
+cd backend && npm test             # backend tests (in-memory MongoDB, no setup needed)
+```
+
+## Deploy
+
+Use Docker Compose on your own server (Caddy for HTTPS, MongoDB with auth, backups).
+See **[DEPLOY.md](DEPLOY.md)**.

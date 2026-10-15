@@ -1,21 +1,22 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { getToken, getRoleFromToken, setSessionUser, setToken } from "../lib/auth";
+import { setToken } from "../lib/auth";
+import { useUser } from "../context/UserContext";
 
 export default function Login() {
   const navigate = useNavigate();
+  const { user, loading: userLoading, setCurrentUser } = useUser();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Already signed in (session verified by UserContext) → skip the form.
   useEffect(() => {
-    const token = getToken();
-    if (!token) return;
-    const role = getRoleFromToken(token);
-    navigate(role === "admin" ? "/admin/dashboard" : "/profile", { replace: true });
-  }, [navigate]);
+    if (userLoading || !user) return;
+    navigate(user.role === "admin" ? "/admin/dashboard" : "/profile", { replace: true });
+  }, [user, userLoading, navigate]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -26,7 +27,7 @@ export default function Login() {
       const data = await api.post("/api/auth/login", { email, password });
       console.log("[Login] Success:", data.user);
       setToken(data.token);
-      setSessionUser(data.user);
+      setCurrentUser(data.user);
       navigate(data.user.role === "admin" ? "/admin/dashboard" : "/profile");
     } catch (err: any) {
       console.error("[Login] Error:", err.message);

@@ -2,17 +2,19 @@ import { Truck, Wallet, PlusCircle, Search, Receipt, Lightbulb, Headset, ArrowRi
 import { Link, useNavigate } from "react-router-dom";
 import { useUser } from "../context/UserContext";
 import { api } from "../lib/api";
-import { useEffect, useState, FormEvent, Fragment } from "react";
+import { useEffect, useState, FormEvent } from "react";
 import { SuccessModal } from "../components/Toast";
-import { formatCurrencyInput, parseUSD, ensureUrlProtocol } from "../lib/formatters";
+import { formatCurrencyInput, parseUSD, ensureUrlProtocol, formatUSD } from "../lib/formatters";
 import { calculateVND, isValidExchangeRate, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
-import { computeOrderVND } from "../lib/orderUtils";
+import { computeOrderVND, buildOrderPayload } from "../lib/orderUtils";
 import PaymentQR from "../components/PaymentQR";
+import { PRODUCT_TYPES } from "../lib/productTypes";
 
 type OrderStatus = "pending" | "approved" | "shipping" | "delivered";
 
 interface Order {
   id: string;
+  _id?: string;
   orderCode: string;
   trackingId: string;
   status: OrderStatus;
@@ -117,6 +119,15 @@ export default function Dashboard() {
     setFormError("");
   }
 
+  useEffect(() => {
+    if (!showCreateModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeCreateModal();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showCreateModal]);
+
   async function handleCreateOrder(e: FormEvent) {
     e.preventDefault();
     setFormError("");
@@ -142,20 +153,7 @@ export default function Dashboard() {
         return;
       }
 
-      console.log("CREATE ORDER DATA:", formData);
-
-      const payload = {
-        productType: formData.productType,
-        productName: formData.productName,
-        productLink: formData.productLink || undefined,
-        warehouseAddress: formData.warehouseAddress.trim(),
-        staffName: formData.staffName.trim(),
-        priceUSD: formData.priceUSD || undefined,
-        exchangeRate: exchangeRateValue,
-        paidAmount: formData.paidAmount || 0,
-      };
-
-      await api.post("/api/orders", payload);
+      await api.post("/api/orders", buildOrderPayload(formData, exchangeRateValue));
 
       setSuccessData({
         title: "Order Submitted!",
@@ -175,13 +173,13 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-6 pb-20">
-      <section className="mb-12 flex flex-col md:flex-row justify-between items-end gap-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-20 overflow-x-hidden">
+      <section className="mb-12 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
         <div className="max-w-2xl">
-          <h1 className="text-4xl md:text-5xl font-headline text-primary mb-2">
+          <h1 className="text-3xl sm:text-4xl md:text-5xl font-headline text-primary mb-2">
             Chào mừng trở lại, {user?.name || "User"}
           </h1>
-          <p className="text-on-surface-variant font-body text-lg">Hành trình vận chuyển của bạn đang được chúng tôi chăm sóc tỉ mỉ từng bước một.</p>
+          <p className="text-on-surface-variant font-body text-base sm:text-lg">Hành trình vận chuyển của bạn đang được chúng tôi chăm sóc tỉ mỉ từng bước một.</p>
         </div>
         <button
           onClick={openCreateModal}
@@ -193,19 +191,19 @@ export default function Dashboard() {
       </section>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
-        <div className="bg-surface-container-lowest p-8 rounded-[20px] shadow-[0_20px_40px_rgba(93,74,65,0.06)] flex flex-col justify-between h-48 border-l-4 border-primary">
+        <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-[20px] shadow-[0_20px_40px_rgba(93,74,65,0.06)] flex flex-col justify-between h-48 border-l-4 border-primary">
           <div className="flex justify-between items-start">
             <span className="text-on-surface-variant font-bold uppercase tracking-widest text-xs">Active Shipments</span>
             <Truck className="text-primary-container w-6 h-6" />
           </div>
-          <div className="text-5xl font-headline text-primary">{loading ? <Loader2 className="w-10 h-10 animate-spin" /> : activeShipments}</div>
+          <div className="text-4xl sm:text-5xl font-headline text-primary">{loading ? <Loader2 className="w-10 h-10 animate-spin" /> : activeShipments}</div>
         </div>
-        <div className="bg-surface-container-lowest p-8 rounded-[20px] shadow-[0_20px_40px_rgba(93,74,65,0.06)] flex flex-col justify-between h-48">
+        <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-[20px] shadow-[0_20px_40px_rgba(93,74,65,0.06)] flex flex-col justify-between h-48">
           <div className="flex justify-between items-start">
             <span className="text-on-surface-variant font-bold uppercase tracking-widest text-xs">Total Spent</span>
             <Wallet className="text-primary-container w-6 h-6" />
           </div>
-          <div className="text-5xl font-headline text-primary">
+          <div className="text-3xl sm:text-4xl md:text-5xl font-headline text-primary break-all">
             {loading ? (
               <Loader2 className="w-10 h-10 animate-spin" />
             ) : (
@@ -254,6 +252,7 @@ export default function Dashboard() {
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Status</th>
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Product</th>
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Nhân viên</th>
+                      <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Price</th>
                       <th className="px-6 py-4 text-sm text-on-surface-variant font-bold">Date</th>
                     </tr>
                   </thead>
@@ -268,8 +267,9 @@ export default function Dashboard() {
                         <td className="px-6 py-5">
                           <StatusBadge status={order.status} />
                         </td>
-                        <td className="px-6 py-5 text-on-surface">{order.productName || order.productName || "-"}</td>
+                        <td className="px-6 py-5 text-on-surface">{order.productName || "-"}</td>
                         <td className="px-6 py-5 text-on-surface">{order.staffName || "-"}</td>
+                        <td className="px-6 py-5 text-on-surface font-semibold">{order.priceUSD ? formatUSD(order.priceUSD) : "-"}</td>
                         <td className="px-6 py-5 text-on-surface">{order.date}</td>
                       </tr>
                     ))}
@@ -291,18 +291,9 @@ export default function Dashboard() {
               <div className="flex flex-col gap-4">
                 {orders
                   .filter(order => order.status !== "delivered")
-                  .map((order) => {
-                    const computedVND = computeOrderVND(order.priceUSD, order.exchangeRate, order.priceVND);
-                    return (
-                      <Fragment key={order.id}>
-                        <PaymentQR
-                          orderCode={order.orderCode || order.trackingId || order.id}
-                          status={order.status}
-                          amount={computedVND}
-                        />
-                      </Fragment>
-                    );
-                  })}
+                  .map((order) => (
+                    <PaymentQR key={order.id} orderId={order._id || order.orderCode || order.id} />
+                  ))}
               </div>
               {orders.filter(o => o.status !== "delivered").length === 0 && (
                 <p className="text-sm text-on-surface-variant mt-3 text-center">
@@ -419,15 +410,9 @@ export default function Dashboard() {
                   onChange={(e) => setFormData({ ...formData, productType: e.target.value })}
                 >
                   <option value="">Select product type</option>
-                  <option value="Electronics">Electronics</option>
-                  <option value="Fashion">Fashion & Apparel</option>
-                  <option value="Beauty">Beauty & Cosmetics</option>
-                  <option value="Home">Home & Living</option>
-                  <option value="Health">Health & Supplements</option>
-                  <option value="Books">Books & Stationery</option>
-                  <option value="Toys">Toys & Games</option>
-                  <option value="Sports">Sport & Outdoors</option>
-                  <option value="Other">Other</option>
+                  {PRODUCT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
                 </select>
               </div>
 
@@ -446,7 +431,7 @@ export default function Dashboard() {
               <div>
                 <label className="block text-sm font-bold text-on-surface-variant mb-1">Product Link (Optional)</label>
                 <input
-                  type="url"
+                  type="text"
                   className="w-full bg-surface-container-lowest rounded-full px-6 py-3"
                   placeholder="https://example.com/product"
                   value={formData.productLink}
@@ -559,8 +544,6 @@ export default function Dashboard() {
           title={successData.title}
           message={successData.message}
           onClose={() => setSuccessData(null)}
-          autoRedirect="/dashboard"
-          redirectDelay={3000}
         />
       )}
     </div>

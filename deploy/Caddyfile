@@ -1,0 +1,14 @@
+# Caddy obtains and renews the HTTPS certificate for $DOMAIN automatically.
+# Point the domain's A/AAAA record at this server and open ports 80 + 443.
+# Several names are allowed: DOMAIN="shop.example.com, www.shop.example.com"
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	reverse_proxy app:3000
+}

@@ -1,6 +1,7 @@
 /**
  * Order display helpers — warehouse address fallback and VND calculation
  */
+import { parseUSD, ensureUrlProtocol } from "./formatters";
 
 /** Resolve warehouse address with legacy fallback for old orders */
 export function getWarehouseAddress(order: {
@@ -42,6 +43,32 @@ export function resolveContactDisplay(
   if (contactType === "phone" && contactValue) return contactValue;
   if (contactType === "email" && contactValue) return contactValue;
   return "—";
+}
+
+export interface CreateOrderForm {
+  productType: string;
+  productName: string;
+  productLink?: string;
+  warehouseAddress: string;
+  staffName: string;
+  priceUSD: string;
+  paidAmount?: string | number;
+}
+
+/** Body for POST /api/orders. The price field holds "1,299"-style text, so send it as a number. */
+export function buildOrderPayload(form: CreateOrderForm, exchangeRate: number) {
+  const usd = parseUSD(form.priceUSD);
+  const rawLink = form.productLink?.trim();
+  return {
+    productType: form.productType,
+    productName: form.productName,
+    productLink: rawLink ? ensureUrlProtocol(rawLink) : undefined,
+    warehouseAddress: form.warehouseAddress.trim(),
+    staffName: form.staffName.trim(),
+    priceUSD: usd > 0 ? usd : undefined,
+    exchangeRate,
+    paidAmount: form.paidAmount || 0,
+  };
 }
 
 /** VND = USD × user-provided exchange rate (no external API) */

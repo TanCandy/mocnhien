@@ -1,63 +1,68 @@
 const crypto = require("crypto");
 const mongoose = require("mongoose");
+const { logger } = require("../config/logger");
 const { calculateQuote } = require("../utils/quoteCalculator");
 const Order = require("../models/Order");
-const { parseUSD, formatVND, formatUSD } = require("../services/exchangeRateService");
+const { parseUSD, parseExchangeRate, formatVND, formatUSD } = require("../services/exchangeRateService");
+const { getOrderTotalUSD, getOrderTotalVND, computePaymentFields } = require("../services/orderMath");
+const sheets = require("../services/sheetsSync");
+const { canTransition, VALID_STATUSES } = require("../utils/orderStateMachine");
 
-const WEBHOOK_URL =
-  "https://script.google.com/macros/s/AKfycbypPB4voV6Ko1QAUKmsanqnBTnGQs_9yNeidZ1MqiMm94EVCzpNrJkSnHzOXVjiGGao/exec";
+const syncOrderToGoogleSheets = sheets.syncOrder;
 
-async function syncOrderToGoogleSheets(order) {
-  // CRITICAL: orderCode MUST exist — skip sync (not throw) so DB write is never blocked
-  if (!order.orderCode) {
-    console.error("❌ Missing orderCode, skipping sync. Order:", JSON.stringify(order));
-    return;
+/** Mongoose validation / cast problems are the caller's fault → 400, not 500. */
+function isClientDbError(err) {
+  return err && (err.name === "ValidationError" || err.name === "CastError");
+}
+
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Owner = the account that placed it, or the customer email it's addressed to. */
+function isOrderOwner(order, user) {
+  const email = String(user.email || "").toLowerCase().trim();
+  const ownerId = order.user?._id ?? order.user;
+  return (ownerId && String(ownerId) === String(user._id)) || (!!email && order.userEmail === email);
+}
+
+/**
+ * Resolve the payment fields to store, given what an admin sent.
+ * - delivered ⇒ fully paid (any overpayment is kept)
+ * - paidAmount is the source of truth; paymentPercent is only used when no
+ *   paidAmount was sent
+ * - an explicit paymentStatus "paid" settles the balance (e.g. cash received)
+ * - an explicit paymentStatus "pending" is kept as a manual override
+ */
+function resolvePaymentUpdate({ totalVND, currentPaid, status, paidAmount, paymentPercent, paymentStatus }) {
+  let paid = currentPaid;
+  if (paidAmount !== undefined && paidAmount !== null && paidAmount !== "") {
+    paid = Math.max(0, Number(paidAmount) || 0);
+  } else if (paymentPercent !== undefined && paymentPercent !== null && paymentPercent !== "") {
+    const pct = Math.min(100, Math.max(0, Number(paymentPercent) || 0));
+    paid = Math.round((pct / 100) * totalVND);
   }
 
-  const orderId = order._id ? String(order._id) : "";
-  const payload = {
-    date:            new Date(order.createdAt).toLocaleDateString("vi-VN"),
-    orderCode:       order.orderCode || "",
-    orderId:         orderId,
-    staffName:       order.staffName ?? "",
-    productName:     order.productName || "",
-    productLink:     order.productLink || "",
-    warehouse:       order.warehouseAddress || "",
-    customerName:    order.customerName || "",
-    contactType:     order.contactType || "",
-    contactValue:    order.contactValue || "",
-    usd:             order.priceUSD ?? 0,
-    exchangeRate:    order.exchangeRate ?? 0,
-    vnd:             order.priceVND ?? 0,
-    paidAmount:      order.paidAmount ?? 0,
-    paymentPercentage: order.paymentPercent ?? 0,
-    remainingAmount:   order.remainingAmount ?? 0,
-    status:         order.status || "",
-    trackingNumber: order.uspsTracking || "",
-    createdAt:       order.createdAt ? new Date(order.createdAt).toISOString() : "",
-    updatedAt:       order.updatedAt ? new Date(order.updatedAt).toISOString() : "",
-  };
-
-  console.log(
-    "Sending order:",
-    payload.orderCode,
-    "paidAmount=" + payload.paidAmount,
-    "remainingAmount=" + payload.remainingAmount,
-    "paymentPercent=" + payload.paymentPercentage,
-    "vnd=" + payload.vnd
-  );
-
-  try {
-    const res = await fetch(WEBHOOK_URL, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(payload),
-    });
-    const text = await res.text();
-    console.log(`[SheetsWebhook] ✓ synced orderCode=${payload.orderCode}  orderId=${payload.orderId}  status=${res.status}  body=${text}`);
-  } catch (err) {
-    console.error(`[SheetsWebhook] ✗ failed for orderCode=${payload.orderCode}  orderId=${payload.orderId}:`, err.message);
+  const explicit = paymentStatus ? String(paymentStatus).toLowerCase() : undefined;
+  if (status === "delivered" || explicit === "paid") {
+    paid = Math.max(paid, totalVND);
   }
+
+  const fields = computePaymentFields(totalVND, paid);
+  if (status === "delivered" || explicit === "paid") {
+    fields.paymentStatus = "paid";
+  } else if (explicit === "pending") {
+    fields.paymentStatus = "pending";
+  }
+  return fields;
+}
+
+/** Re-derive stored payment fields on a document after its total changed. */
+function applyDerivedPaymentFields(doc) {
+  const fields = computePaymentFields(getOrderTotalVND(doc), doc.paidAmount);
+  doc.paymentPercent = fields.paymentPercent;
+  doc.remainingAmount = fields.remainingAmount;
+  if (doc.status !== "delivered") doc.paymentStatus = fields.paymentStatus;
 }
 
 function generateTrackingId() {
@@ -122,7 +127,8 @@ function normaliseContact(raw) {
     if (ct === "none") return { contactType: "none", contactValue: "NO_CONTACT" };
     if (ct === "phone") return { contactType: "phone", contactValue: cv.replace(/[^\d+]/g, "") };
     if (ct === "email") return { contactType: "email", contactValue: cv.toLowerCase().trim() };
-    return { contactType: "email", contactValue: cv.toLowerCase().trim() };
+    // Unknown type: keep it so the caller's VALID_CONTACT_TYPES check rejects it.
+    return { contactType: ct, contactValue: cv };
   }
 
   // Legacy plain email string (string passed instead of object)
@@ -227,11 +233,12 @@ function buildTimeline(order) {
 
 function mapOrderForApi(order) {
   let price = "$0.00";
-  const priceUSD = order.totalUSD || order.priceUSD || order.total_price || 0;
+  const priceUSD = getOrderTotalUSD(order);
   const exchangeRate = order.exchangeRate || 0;
-  
+
   // ALWAYS recalculate VND from USD to avoid stale values
-  const priceVND = exchangeRate > 0 ? Math.round(priceUSD * exchangeRate) : (order.totalVND || order.priceVND || 0);
+  const priceVND = getOrderTotalVND(order);
+  const payment = computePaymentFields(priceVND, order.paidAmount);
 
   if (priceUSD > 0) {
     price = formatUSD(priceUSD);
@@ -256,7 +263,6 @@ function mapOrderForApi(order) {
     trackingId: order.tracking_code || order.trackingId,
     userId: order.user?._id?.toString() || order.user?.toString(),
     status: order.status,
-    paymentStatus: order.paymentStatus,
     date: formatDate(orderDate),
     warehouseAddress,
     staffName: order.staffName ?? "",
@@ -288,10 +294,12 @@ function mapOrderForApi(order) {
     priceUSDFormatted: formatUSD(priceUSD),
     totalUSD: priceUSD,
     totalVND: priceVND,
-    paymentStatus: order.paymentStatus,
-    paymentPercent: order.paymentPercent ?? 0,
-    paidAmount:     order.paidAmount     ?? 0,
-    remainingAmount: order.remainingAmount ?? (priceVND - (order.paidAmount ?? 0)),
+    paymentStatus: order.paymentStatus || payment.paymentStatus,
+    // Derived, never read from the stored copies — those default to 0 and
+    // were stale for most legacy orders.
+    paymentPercent: payment.paymentPercent,
+    paidAmount: payment.paidAmount,
+    remainingAmount: payment.remainingAmount,
     approvedAt: order.approvedAt,
     approvedBy: order.approvedBy,
     createdAt: order.createdAt,
@@ -330,9 +338,10 @@ async function createOrder(req, res) {
       return res.status(400).json({ message: "Please fill all required fields." });
     }
 
-    const exchangeRateValue = exchangeRate ? parseFloat(exchangeRate) : 0;
+    const exchangeRateValue = exchangeRate ? parseExchangeRate(exchangeRate) : 0;
     // Exchange rate is only required when a USD price is also provided
-    const parsedPrice = parseFloat(priceUSD) || 0;
+    // parseUSD strips thousands separators ("1,299" → 1299); parseFloat would stop at the comma
+    const parsedPrice = parseUSD(priceUSD);
     if (parsedPrice > 0 && (isNaN(exchangeRateValue) || exchangeRateValue <= 0)) {
       return res.status(400).json({ message: "Exchange rate must be greater than 0 when price USD is provided." });
     }
@@ -347,11 +356,10 @@ async function createOrder(req, res) {
     let priceUSDValue = 0;
     let priceVNDValue = 0;
 
-    if (priceUSD && parseFloat(priceUSD) > 0) {
-      priceUSDValue = parseFloat(priceUSD);
+    if (parsedPrice > 0) {
+      priceUSDValue = parsedPrice;
       if (exchangeRateValue > 0) {
         priceVNDValue = Math.round(priceUSDValue * exchangeRateValue);
-        console.log(`[CreateOrder] Price conversion: $${priceUSDValue} × ${exchangeRateValue} = ${priceVNDValue} VND`);
       }
     }
 
@@ -377,15 +385,7 @@ async function createOrder(req, res) {
       paymentStatus: "pending",
     });
 
-    console.log(`[CreateOrder] User ${userEmail} created order ${orderCode}`);
-    console.log("ORDER BEFORE SYNC:", JSON.stringify({
-      orderCode: order.orderCode,
-      paidAmount: order.paidAmount,
-      remainingAmount: order.remainingAmount,
-      paymentPercent: order.paymentPercent,
-      totalVND: order.totalVND,
-      status: order.status,
-    }));
+    logger.info({ orderId: String(order._id), orderCode, userId: String(userId) }, "[CreateOrder] order created");
 
     await syncOrderToGoogleSheets(order);
 
@@ -394,7 +394,7 @@ async function createOrder(req, res) {
       message: "Order submitted, waiting for approval",
     });
   } catch (error) {
-    console.error("[CreateOrder] Error:", error);
+    logger.error({ err: error.message }, "[CreateOrder] failed");
     return res.status(500).json({ message: "Failed to create order" });
   }
 }
@@ -405,23 +405,19 @@ async function createOrder(req, res) {
 async function getMyOrders(req, res) {
   try {
     const userEmail = req.user.email.toLowerCase().trim();
-    console.log(`[GetMyOrders] Fetching orders for: "${userEmail}"`);
 
     const orders = await Order.find({ userEmail })
       .sort({ createdAt: -1 })
       .lean();
 
-    console.log(`[GetMyOrders] Found ${orders.length} orders for ${userEmail}`);
-    if (orders.length > 0) {
-      console.log(`[GetMyOrders] Found ${orders.length} order(s) for ${userEmail}`);
-    }
+    logger.info({ userId: String(req.user._id), count: orders.length }, "[GetMyOrders] fetched");
 
     return res.status(200).json({
       orders: orders.map(mapOrderForApi),
       count: orders.length,
     });
   } catch (error) {
-    console.error("[GetMyOrders] Error:", error);
+    logger.error({ err: error.message }, "[GetMyOrders] failed");
     return res.status(500).json({ message: "Failed to fetch your orders" });
   }
 }
@@ -430,8 +426,6 @@ async function getMyOrders(req, res) {
 // ADMIN CREATE ORDER (Legacy with price)
 // ============================================
 async function adminCreateOrder(req, res) {
-  console.log("[AdminCreateOrder] Request body:", req.body);
-
   const {
     tracking_code,
     product_name,
@@ -443,6 +437,7 @@ async function adminCreateOrder(req, res) {
     order_date,
     sold_by,
     status,
+    paymentStatus,
     paymentPercent,
     paidAmount,
     user_id,
@@ -458,6 +453,7 @@ async function adminCreateOrder(req, res) {
   const finalProductName = productName || product_name;
   const finalWarehouse = warehouseAddress ? String(warehouseAddress).trim() : "";
   const finalStaffName = staffName ? String(staffName).trim() : "";
+  const userEmail = req.user.email.toLowerCase();
 
   if (!finalProductName) {
     return res.status(400).json({ message: "productName is required." });
@@ -496,7 +492,7 @@ async function adminCreateOrder(req, res) {
 
   // Parse priceUSD and exchangeRate
   const parsedPriceUSD = parseUSD(priceUSD);
-  const parsedExchangeRate = exchangeRate ? parseFloat(exchangeRate) : 0;
+  const parsedExchangeRate = exchangeRate ? parseExchangeRate(exchangeRate) : 0;
 
   // Exchange rate is only required when a USD price is also provided
   if (parsedPriceUSD > 0 && (isNaN(parsedExchangeRate) || parsedExchangeRate <= 0)) {
@@ -507,7 +503,6 @@ async function adminCreateOrder(req, res) {
   let priceVND = 0;
   if (parsedPriceUSD > 0 && parsedExchangeRate > 0) {
     priceVND = Math.round(parsedPriceUSD * parsedExchangeRate);
-    console.log(`[AdminCreateOrder] Price conversion: $${parsedPriceUSD} × ${parsedExchangeRate} = ${priceVND} VND`);
   }
 
   // Always generate a fresh orderCode — never reuse tracking_code
@@ -538,16 +533,14 @@ async function adminCreateOrder(req, res) {
     totalUSD: parsedPriceUSD,
     totalVND: priceVND,
     exchangeRate: parsedExchangeRate,
-    // Payment fields
-    paymentPercent:
-      paymentPercent !== undefined ? Math.min(100, Math.max(0, Number(paymentPercent) || 0)) : 0,
-    paidAmount:
-      paidAmount !== undefined
-        ? Math.max(0, Number(paidAmount) || 0)
-        : (paymentPercent !== undefined
-            ? Math.round((Math.min(100, Math.max(0, Number(paymentPercent) || 0)) / 100) * priceVND)
-            : 0),
-    remainingAmount: 0,
+    ...resolvePaymentUpdate({
+      totalVND: priceVND,
+      currentPaid: 0,
+      status: status || "pending",
+      paidAmount,
+      paymentPercent,
+      paymentStatus,
+    }),
   };
 
   // If user_id provided, use it; otherwise use admin's id (for self-orders)
@@ -557,18 +550,9 @@ async function adminCreateOrder(req, res) {
     orderData.user = req.user._id;
   }
 
-  console.log("CREATE:", JSON.stringify(orderData, null, 2));
-
   const order = await Order.create(orderData);
 
-  console.log("ORDER BEFORE SYNC:", JSON.stringify({
-    orderCode: order.orderCode,
-    paidAmount: order.paidAmount,
-    remainingAmount: order.remainingAmount,
-    paymentPercent: order.paymentPercent,
-    totalVND: order.totalVND,
-    status: order.status,
-  }));
+  logger.info({ orderId: String(order._id), orderCode: order.orderCode, status: order.status }, "[AdminCreateOrder] order created");
 
   await syncOrderToGoogleSheets(order);
 
@@ -584,8 +568,6 @@ async function adminCreateOrder(req, res) {
 async function adminUpdateOrder(req, res) {
   try {
     const { id } = req.params;
-    console.log("[AdminUpdateOrder] id:", id);
-    console.log("[AdminUpdateOrder] body:", JSON.stringify(req.body, null, 2));
 
     // ── 0. Normalise req.body: coerce empty strings → undefined ────────────
     //    Frontend sends "" for blank fields; we treat those as "not set"
@@ -627,7 +609,7 @@ async function adminUpdateOrder(req, res) {
 
     // Exchange rate > 0 check
     if (raw.exchangeRate !== undefined) {
-      const rate = parseFloat(raw.exchangeRate);
+      const rate = parseExchangeRate(raw.exchangeRate);
       if (isNaN(rate) || rate <= 0) {
         return res.status(400).json({ message: "Exchange rate must be greater than 0." });
       }
@@ -659,121 +641,113 @@ async function adminUpdateOrder(req, res) {
       updateData.address = String(raw.warehouseAddress).trim();
     }
 
-    // ── 4. Server-computed price fields ────────────────────────────────────
-    const sentPriceUSD    = raw.priceUSD    !== undefined;
+    // ── 4. Server-computed price + payment fields ─────────────────────────
+    //    Money fields are never taken from the body as-is: the total is
+    //    derived server-side (the form's totalVND goes stale when the price is
+    //    edited) and payment fields are recomputed from it.
+    for (const k of [
+      "priceUSD", "totalUSD", "exchangeRate", "priceVND", "totalVND",
+      "paidAmount", "paymentPercent", "paymentStatus", "remainingAmount",
+    ]) {
+      delete updateData[k];
+    }
+
+    const sentPriceUSD = raw.priceUSD !== undefined;
     const sentExchangeRate = raw.exchangeRate !== undefined;
-
-    const priceUSD =
-      sentPriceUSD ? parseUSD(raw.priceUSD) : (currentOrder.priceUSD || 0);
-    const exchangeRate =
-      sentExchangeRate ? parseFloat(raw.exchangeRate) : (currentOrder.exchangeRate || 0);
-
-    // Recompute VND when USD or exchange rate changes
-    const totalVNDChanged = sentPriceUSD || sentExchangeRate;
-    if (priceUSD > 0 && exchangeRate > 0) {
-      updateData.priceUSD  = priceUSD;
-      updateData.totalUSD  = priceUSD;
-      updateData.priceVND  = Math.round(priceUSD * exchangeRate);
-      updateData.totalVND  = updateData.priceVND;
-    } else if (sentPriceUSD && priceUSD === 0) {
-      updateData.priceUSD = 0;
-      updateData.totalUSD = 0;
-      updateData.priceVND = 0;
-      updateData.totalVND = 0;
+    const priceUSD = sentPriceUSD ? parseUSD(raw.priceUSD) : (currentOrder.priceUSD || 0);
+    if (sentPriceUSD) {
+      updateData.priceUSD = priceUSD;
+      updateData.totalUSD = priceUSD;
+    }
+    if (sentExchangeRate) {
+      updateData.exchangeRate = parseExchangeRate(raw.exchangeRate);
     }
 
-    // ── 5. Payment fields ──────────────────────────────────────────────────
-    const sentPaid    = raw.paidAmount     !== undefined;
-    const sentPercent = raw.paymentPercent !== undefined;
+    // Clearing the USD price clears the VND price too (no stale fallback).
+    const cleared = sentPriceUSD && priceUSD === 0 ? { priceVND: 0, totalVND: 0 } : {};
+    const totalVND = getOrderTotalVND({ ...currentOrder.toObject(), ...updateData, ...cleared });
+    if (sentPriceUSD || sentExchangeRate) {
+      updateData.priceVND = totalVND;
+      updateData.totalVND = totalVND;
+    }
 
-    // Trust totalVND from frontend when sent; fall back to server-computed value
-    const totalVND =
-      raw.totalVND !== undefined
-        ? Math.max(0, Number(raw.totalVND) || 0)
-        : (updateData.totalVND !== undefined ? updateData.totalVND : (currentOrder.totalVND || currentOrder.priceVND || 0));
-
-    const normalizedStatus = raw.status ? String(raw.status).toLowerCase() : currentOrder.status;
-
-    if (normalizedStatus === "delivered") {
-      updateData.status         = "delivered";
-      updateData.paymentStatus = "paid";
-      updateData.paymentPercent = 100;
-      updateData.paidAmount     = totalVND;
-      updateData.remainingAmount = 0;
-    } else if (normalizedStatus === "pending") {
-      updateData.status = "pending";
-
-      if (sentPaid && !sentPercent) {
-        const paid = Math.max(0, Math.min(totalVND, Number(raw.paidAmount) || 0));
-        updateData.paidAmount     = paid;
-        updateData.paymentPercent = totalVND > 0 ? Math.round((paid / totalVND) * 100) : 0;
-      } else if (sentPercent && !sentPaid) {
-        const pct = Math.min(100, Math.max(0, Number(raw.paymentPercent) || 0));
-        updateData.paymentPercent = pct;
-        updateData.paidAmount     = Math.round((pct / 100) * totalVND);
-      } else if (sentPaid && sentPercent) {
-        const paid = Math.max(0, Math.min(totalVND, Number(raw.paidAmount) || 0));
-        const pct  = Math.min(100, Math.max(0, Number(raw.paymentPercent) || 0));
-        updateData.paidAmount     = paid;
-        updateData.paymentPercent = pct;
+    // ── 4b. Order State Machine Transition Validation ────────────────────
+    if (raw.status !== undefined) {
+      const targetStatus = String(raw.status).toLowerCase().trim();
+      if (!VALID_STATUSES.includes(targetStatus)) {
+        return res.status(400).json({ message: "Invalid status value." });
       }
-      // If neither paidAmount nor percent sent — preserve existing DB values
-
-      // Always recalculate remainingAmount from current paidAmount and totalVND
-      const finalPaid =
-        updateData.paidAmount !== undefined
-          ? updateData.paidAmount
-          : (currentOrder.paidAmount || 0);
-      updateData.remainingAmount = Math.max(0, totalVND - finalPaid);
-
-      const finalPct =
-        updateData.paymentPercent !== undefined
-          ? updateData.paymentPercent
-          : (currentOrder.paymentPercent || 0);
-      updateData.paymentStatus = finalPct >= 100 ? "paid" : "pending";
-
-      // Debug: log payment state before saving
-      console.log(
-        `[AdminUpdateOrder] payment → totalVND=${totalVND}  paidAmount=${updateData.paidAmount}  ` +
-        `paymentPercent=${updateData.paymentPercent}  remainingAmount=${updateData.remainingAmount}`
-      );
-    } else if (["approved", "shipping"].includes(normalizedStatus)) {
-      updateData.status = normalizedStatus;
+      if (!canTransition(currentOrder.status, targetStatus)) {
+        return res.status(400).json({
+          message: `Cannot transition order status from '${currentOrder.status}' to '${targetStatus}'.`,
+        });
+      }
     }
 
-    // ── 6. Strip mongo-only fields ─────────────────────────────────────────
+    const normalizedStatus = raw.status ? String(raw.status).toLowerCase().trim() : currentOrder.status;
+    const paymentInputSent =
+      raw.paidAmount !== undefined || raw.paymentPercent !== undefined || raw.paymentStatus !== undefined;
+    const totalChanged = totalVND !== getOrderTotalVND(currentOrder);
+
+    // The edit form also sends the paidAmount it was opened with; if a bank
+    // transfer was credited since, refuse instead of overwriting it.
+    if (
+      paymentInputSent &&
+      raw.expectedPaidAmount !== undefined &&
+      Number(raw.expectedPaidAmount) !== (currentOrder.paidAmount || 0)
+    ) {
+      return res.status(409).json({
+        message: "A payment was recorded for this order while you were editing. Reload and try again.",
+      });
+    }
+
+    updateData.status = normalizedStatus;
+    if (paymentInputSent || totalChanged || normalizedStatus !== currentOrder.status) {
+      Object.assign(updateData, resolvePaymentUpdate({
+        totalVND,
+        currentPaid: currentOrder.paidAmount || 0,
+        status: normalizedStatus,
+        paidAmount: raw.paidAmount,
+        paymentPercent: raw.paymentPercent,
+        paymentStatus: raw.paymentStatus,
+      }));
+    }
+
+    // ── 6. Strip mongo-only / non-editable fields ───────────────────────────
+    //    `user` (order ownership) must never be reassignable from this
+    //    generic update payload — it's not a field the admin edit form sends.
     delete updateData._id;
     delete updateData.__v;
     delete updateData.createdAt;
     delete updateData.updatedAt;
-
-    console.log("[AdminUpdateOrder] Final updateData:", JSON.stringify(updateData, null, 2));
+    delete updateData.user;
+    delete updateData.appliedPaymentIds; // owned by the payment service
+    delete updateData.expectedPaidAmount;
 
     // ── 7. Persist to DB ───────────────────────────────────────────────────
-    const order = await Order.findByIdAndUpdate(
-      mongoId,
+    //    When payment fields are rewritten, only apply if paidAmount is still
+    //    what we computed from — otherwise a bank transfer landed meanwhile.
+    const filter = { _id: mongoId };
+    if (updateData.paidAmount !== undefined) {
+      filter.paidAmount = currentOrder.paidAmount ? currentOrder.paidAmount : { $in: [0, null] };
+    }
+    const order = await Order.findOneAndUpdate(
+      filter,
       { $set: updateData },
-      { new: true, runValidators: true }
+      { returnDocument: "after", runValidators: true }
     ).lean();
 
     if (!order) {
+      const stillExists = await Order.exists({ _id: mongoId });
+      if (stillExists) {
+        return res.status(409).json({
+          message: "A payment was recorded for this order while you were editing. Reload and try again.",
+        });
+      }
       return res.status(404).json({ message: "Order not found after update." });
     }
 
-    console.log(
-      `[AdminUpdateOrder] ✓ Saved _id=${order._id}  staffName="${order.staffName}"  ` +
-      `contactType="${order.contactType}"  contactValue="${order.contactValue}"  ` +
-      `warehouseAddress="${order.warehouseAddress}"  exchangeRate=${order.exchangeRate}`
-    );
-
-    console.log("UPDATE:", JSON.stringify({
-      orderCode: order.orderCode,
-      paidAmount: order.paidAmount,
-      remainingAmount: order.remainingAmount,
-      paymentPercent: order.paymentPercent,
-      totalVND: order.totalVND,
-      status: order.status,
-    }));
+    logger.info({ orderId: String(order._id), orderCode: order.orderCode, status: order.status }, "[AdminUpdateOrder] order updated");
 
     await syncOrderToGoogleSheets(order);
 
@@ -782,8 +756,11 @@ async function adminUpdateOrder(req, res) {
       message: "Order updated successfully.",
     });
   } catch (error) {
-    console.error("[AdminUpdateOrder] Error:", error);
-    return res.status(500).json({ message: error.message || "Failed to update order." });
+    if (isClientDbError(error)) {
+      return res.status(400).json({ message: error.message });
+    }
+    logger.error({ err: error.message }, "[AdminUpdateOrder] failed");
+    return res.status(500).json({ message: "Failed to update order." });
   }
 }
 
@@ -792,7 +769,6 @@ async function adminUpdateOrder(req, res) {
 // ============================================
 async function approveOrder(req, res) {
   const { id } = req.params;
-  console.log("[ApproveOrder] Approving order:", id);
 
   try {
     const order = await Order.findById(id);
@@ -809,25 +785,19 @@ async function approveOrder(req, res) {
     order.approvedBy = req.user._id;
 
     if (order.priceUSD && order.priceUSD > 0) {
-      console.log(`[ApproveOrder] Calculating VND for order ${order.orderCode || order._id}`);
       if (order.exchangeRate && order.exchangeRate > 0) {
         order.priceVND = Math.round(order.priceUSD * order.exchangeRate);
         order.totalVND = order.priceVND;
         order.totalUSD = order.priceUSD;
-        console.log(`[ApproveOrder] Calculated: $${order.priceUSD} × ${order.exchangeRate} = ${order.priceVND} VND`);
       }
     }
+    applyDerivedPaymentFields(order);
 
     await order.save();
-    console.log(`[ApproveOrder] Order ${order.orderCode || order._id} approved by ${req.user.email}`);
-    console.log("ORDER BEFORE SYNC:", JSON.stringify({
-      orderCode: order.orderCode,
-      paidAmount: order.paidAmount,
-      remainingAmount: order.remainingAmount,
-      paymentPercent: order.paymentPercent,
-      totalVND: order.totalVND,
-      status: order.status,
-    }));
+    logger.info(
+      { orderId: String(order._id), orderCode: order.orderCode, approvedBy: String(req.user._id) },
+      "[ApproveOrder] order approved"
+    );
 
     await syncOrderToGoogleSheets(order);
 
@@ -836,8 +806,9 @@ async function approveOrder(req, res) {
       message: "Order approved successfully.",
     });
   } catch (err) {
-    console.error("[ApproveOrder] Error:", err);
-    return res.status(500).json({ message: "Failed to approve order: " + err.message });
+    if (isClientDbError(err)) return res.status(400).json({ message: "Invalid order id." });
+    logger.error({ err: err.message }, "[ApproveOrder] failed");
+    return res.status(500).json({ message: "Failed to approve order." });
   }
 }
 
@@ -846,7 +817,6 @@ async function approveOrder(req, res) {
 // ============================================
 async function recalculateVND(req, res) {
   const { id } = req.params;
-  console.log("[RecalculateVND] Recalculating VND for order:", id);
 
   try {
     const order = await Order.findById(id);
@@ -866,10 +836,12 @@ async function recalculateVND(req, res) {
     order.priceVND = Math.round(order.priceUSD * order.exchangeRate);
     order.totalVND = order.priceVND;
     order.totalUSD = order.priceUSD;
+    applyDerivedPaymentFields(order);
 
     await order.save();
 
-    console.log(`[RecalculateVND] Recalculated: $${order.priceUSD} × ${order.exchangeRate} = ${order.priceVND} VND`);
+    logger.info({ orderId: String(order._id), orderCode: order.orderCode, priceVND: order.priceVND }, "[RecalculateVND] recalculated");
+    await syncOrderToGoogleSheets(order);
 
     // Always return the updated order
     return res.status(200).json({
@@ -877,8 +849,9 @@ async function recalculateVND(req, res) {
       message: "VND price recalculated successfully.",
     });
   } catch (err) {
-    console.error("[RecalculateVND] Error:", err);
-    return res.status(500).json({ message: "Failed to recalculate VND: " + err.message });
+    if (isClientDbError(err)) return res.status(400).json({ message: "Invalid order id." });
+    logger.error({ err: err.message }, "[RecalculateVND] failed");
+    return res.status(500).json({ message: "Failed to recalculate VND." });
   }
 }
 
@@ -909,16 +882,14 @@ async function listOrders(req, res) {
       filter.status = req.query.status;
     }
 
-    console.log(`[ListOrders] User ${userEmail} (role: ${req.user.role}) querying orders with filter:`, JSON.stringify(filter));
-
     const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
-    console.log(`[ListOrders] Found ${orders.length} orders`);
+    logger.info({ userId: String(req.user._id), role: req.user.role, count: orders.length }, "[ListOrders] fetched");
 
     return res.status(200).json({
       orders: orders.map(mapOrderForApi),
     });
   } catch (error) {
-    console.error("[ListOrders] Error:", error);
+    logger.error({ err: error.message }, "[ListOrders] failed");
     return res.status(500).json({ message: "Failed to fetch orders" });
   }
 }
@@ -936,8 +907,10 @@ async function getOrder(req, res) {
 
   const order = found.toObject ? found.toObject() : found;
 
-  // Non-admins can only view their own orders
-  if (req.user.role !== "admin" && order.user.toString() !== req.user._id.toString()) {
+  // Non-admins can only view their own orders — matched by account id or
+  // by email (admin-created orders belong to the admin account but are
+  // addressed to the customer's email, which is how getMyOrders finds them).
+  if (req.user.role !== "admin" && !isOrderOwner(order, req.user)) {
     return res.status(403).json({ message: "Access denied." });
   }
 
@@ -958,30 +931,39 @@ async function trackOrder(req, res) {
     return res.status(400).json({ message: "Tracking code is required." });
   }
 
-  console.log(`[TrackOrder] User "${userEmail}" (${req.user.role}) searching for code: "${searchCode}"`);
+  const trimmed = String(searchCode).trim();
+  const or = [
+    { orderCode: trimmed },
+    { tracking_code: trimmed },
+    { trackingId: trimmed },
+  ];
+  if (mongoose.isValidObjectId(trimmed)) {
+    or.push({ _id: trimmed });
+  }
 
   // Build query - admin can find any order, users only see their own
-  const query = {
-    $or: [
-      { orderCode: String(searchCode).trim() },
-      { tracking_code: String(searchCode).trim() },
-      { trackingId: String(searchCode).trim() },
-    ]
-  };
+  const query = { $or: or };
 
-  // Non-admin users must match their userEmail (order isolation)
+  // Non-admin users must match their userEmail or user ID (order isolation)
   if (!isAdmin) {
-    query.$and = [{ userEmail: userEmail }];
+    query.$and = [
+      {
+        $or: [
+          { userEmail: userEmail },
+          { user: req.user._id },
+        ],
+      },
+    ];
   }
 
   const order = await Order.findOne(query).lean();
 
   if (!order) {
-    console.log(`[TrackOrder] Order "${searchCode}" not found for user "${userEmail}"`);
+    logger.info({ userId: String(req.user._id) }, "[TrackOrder] not found");
     return res.status(404).json({ message: "Order not found." });
   }
 
-  console.log(`[TrackOrder] Found order ${order.orderCode || order.trackingId} for ${isAdmin ? "admin" : "user"}`);
+  logger.info({ orderId: String(order._id), userId: String(req.user._id), isAdmin }, "[TrackOrder] found");
 
   const timeline = buildTimeline(order);
   const mapped = mapOrderForApi(order);
@@ -1001,18 +983,18 @@ async function searchOrders(req, res) {
   try {
     const userEmail = req.user.email.toLowerCase().trim();
     const isAdmin = req.user.role === "admin";
-    const keyword = (req.query.q || "").trim();
+    const keyword = String(req.query.q || "").trim().slice(0, 100);
 
     if (!keyword || keyword.length < 1) {
       return res.status(200).json([]);
     }
 
-    console.log(`[SearchOrders] User "${userEmail}" (${req.user.role}) searching: "${keyword}"`);
-
+    // Escaped: a raw user string as $regex allows ReDoS / pattern injection.
+    const pattern = escapeRegex(keyword);
     const query = {
       $or: [
-        { orderCode: { $regex: keyword, $options: "i" } },
-        { customerName: { $regex: keyword, $options: "i" } },
+        { orderCode: { $regex: pattern, $options: "i" } },
+        { customerName: { $regex: pattern, $options: "i" } },
       ],
     };
 
@@ -1028,11 +1010,11 @@ async function searchOrders(req, res) {
 
     const mapped = orders.map(mapOrderForApi);
 
-    console.log(`[SearchOrders] Found ${mapped.length} results for "${keyword}"`);
+    logger.info({ userId: String(req.user._id), count: mapped.length }, "[SearchOrders] results");
 
     return res.status(200).json(mapped);
   } catch (error) {
-    console.error("[SearchOrders] Error:", error);
+    logger.error({ err: error.message }, "[SearchOrders] failed");
     return res.status(500).json({ message: "Search failed." });
   }
 }
@@ -1043,41 +1025,33 @@ async function searchOrders(req, res) {
 async function deleteOrder(req, res) {
   try {
     const { id } = req.params;
-    console.log("[DeleteOrder] Deleting order:", id);
 
     const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({ message: "Order not found." });
     }
 
-    // Sync to Google Sheets — tell the sheet to delete the row
-    try {
-      const webhookPayload = {
-        action: "delete",
-        orderCode: order.orderCode || "",
-        orderId: order._id ? String(order._id) : "",
-      };
-      console.log("DELETE:", webhookPayload.orderCode);
-      const sheetRes = await fetch(WEBHOOK_URL, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(webhookPayload),
-      });
-      const text = await sheetRes.text();
-      console.log(`[DeleteOrder] Sheets response: ${sheetRes.status}  ${text}`);
-    } catch (sheetErr) {
-      // Sheet errors are logged but must not block DB deletion
-      console.error("[DeleteOrder] Sheets sync error:", sheetErr.message);
-    }
+    // Sheet errors are logged inside and never block DB deletion
+    await sheets.deleteOrderRow(order);
+
+    // Unlink any payments associated with this order so they are not orphaned
+    const Payment = require("../models/Payment");
+    await Payment.updateMany(
+      { order: order._id },
+      { $set: { status: "unmatched", order: null, orderCode: null } }
+    );
 
     // Delete from database
     await Order.findByIdAndDelete(id);
-    console.log(`[DeleteOrder] ✓ Deleted order ${id} from DB`);
+    logger.info({ orderId: id }, "[DeleteOrder] deleted");
 
     return res.status(200).json({ message: "Order deleted successfully." });
   } catch (error) {
-    console.error("[DeleteOrder] Error:", error);
-    return res.status(500).json({ message: "Delete failed: " + error.message });
+    logger.error({ err: error.message }, "[DeleteOrder] failed");
+    if (isClientDbError(error)) {
+      return res.status(400).json({ message: "Invalid order id." });
+    }
+    return res.status(500).json({ message: "Delete failed." });
   }
 }
 

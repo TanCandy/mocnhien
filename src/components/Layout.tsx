@@ -16,6 +16,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const navLinks = [
     { name: "Home", path: "/" },
+    { name: "Calculator", path: "/calculator" },
     { name: "Tracking", path: "/tracking" },
     { name: "Dashboard", path: "/dashboard" },
     { name: "Profile", path: "/profile" },
@@ -25,6 +26,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const adminLinks = [
     { name: "Manage Users", path: "/admin/dashboard" },
     { name: "Manage Orders", path: "/admin/orders" },
+    { name: "Payments", path: "/admin/payments" },
   ];
 
   return (

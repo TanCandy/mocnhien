@@ -49,3 +49,11 @@ README.md
 # Agent / metadata folders
 .agents/
 metadata.json
+# Not needed at runtime
+backend/tests/
+integrations/
+deploy/
+scripts/
+backups/
+.claude/
+.github/

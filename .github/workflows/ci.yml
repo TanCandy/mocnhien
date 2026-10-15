@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Typecheck (frontend)
+        run: npm run lint
+
+      - name: Audit (root)
+        run: npm audit --audit-level=high
+
+      # Production deps only: nodemon (dev) pulls in braces, which has no patched release yet.
+      - name: Audit (backend)
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: backend
+
+      - name: Test (frontend)
+        run: npm test
+
+      - name: Test (backend)
+        run: npm test
+        working-directory: backend
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build .

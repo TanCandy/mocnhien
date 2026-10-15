@@ -63,7 +63,7 @@ export default function Tracking() {
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -110,23 +110,25 @@ export default function Tracking() {
 
   const selectOrder = (order: Order) => {
     setSelectedOrder(order);
-    setQuery(order.customerName);
+    setQuery(order.orderCode || order.trackingId || order.customerName || "");
     setSuggestions([]);
   };
 
   const handleTrack = async () => {
-    if (!selectedOrder) {
-      setError("Please select an order from the suggestions.");
+    const codeToTrack = selectedOrder?.orderCode || query.trim();
+    if (!codeToTrack) {
+      setError("Please enter or select an order code to track.");
       return;
     }
 
     setLoading(true);
     setError("");
     setFoundOrder(null);
+    setSuggestions([]);
 
     try {
-      // Use the existing track API with the orderCode
-      const data = await api.get(`/api/orders/track?code=${encodeURIComponent(selectedOrder.orderCode)}`);
+      // Use the track API with the orderCode or typed code
+      const data = await api.get(`/api/orders/track?code=${encodeURIComponent(codeToTrack)}`);
       if (data.order) {
         setFoundOrder(data.order);
         setError("");
@@ -137,7 +139,7 @@ export default function Tracking() {
     } catch (err: any) {
       setFoundOrder(null);
       if (err.status === 401) {
-        setError("Session expired. Please log in again.");
+        setError("Please log in to track your order.");
       } else if (err.message && err.message.includes("does not belong")) {
         setError(err.message);
       } else {

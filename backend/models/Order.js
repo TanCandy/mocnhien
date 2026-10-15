@@ -62,18 +62,23 @@ const orderSchema = new mongoose.Schema(
     paidAmount: {
       type: Number,
       default: 0,
+      min: 0,
     },
     remainingAmount: {
       type: Number,
       default: 0,
+      min: 0,
     },
+    // Payment records already credited to paidAmount (idempotency guard for
+    // the bank webhook — see services/paymentService.js).
+    appliedPaymentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Payment" }],
 
     // Pricing — exchangeRate is user-provided (not from external API)
-    priceUSD: { type: Number, default: 0 },
-    priceVND: { type: Number, default: 0 },
-    exchangeRate: { type: Number, default: 0 },
-    totalUSD: { type: Number, default: 0 },
-    totalVND: { type: Number, default: 0 },
+    priceUSD: { type: Number, default: 0, min: 0 },
+    priceVND: { type: Number, default: 0, min: 0 },
+    exchangeRate: { type: Number, default: 0, min: 0 },
+    totalUSD: { type: Number, default: 0, min: 0 },
+    totalVND: { type: Number, default: 0, min: 0 },
 
     // Tracking
     uspsTracking: { type: String, trim: true },

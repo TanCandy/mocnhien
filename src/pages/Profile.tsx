@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { User, Mail, Phone, MapPin, Shield, Bell, LogOut, ChevronRight, Loader2, Save, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import { clearSession, getToken } from "../lib/auth";
+import { getToken } from "../lib/auth";
 import { SuccessModal } from "../components/Toast";
+import { useUser } from "../context/UserContext";
 
 interface ProfileData {
   _id: string;
@@ -17,6 +18,7 @@ interface ProfileData {
 
 export default function Profile() {
   const navigate = useNavigate();
+  const { setCurrentUser } = useUser();
 
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -42,7 +44,7 @@ export default function Profile() {
     const fetchProfile = async () => {
       const token = getToken();
       if (!token) {
-        clearSession();
+        setCurrentUser(null);
         if (mounted.current) {
           setError("Not authenticated.");
           setLoading(false);
@@ -65,8 +67,11 @@ export default function Profile() {
         if (!mounted.current) return;
         console.error("[Profile] fetch failed:", err);
         setError(err?.message || "Unauthorized");
-        clearSession();
-        navigateRef.current("/login", { replace: true });
+        // Only a rejected session logs out; a server/network error just shows the message.
+        if (err?.status === 401) {
+          setCurrentUser(null);
+          navigateRef.current("/login", { replace: true });
+        }
       } finally {
         if (mounted.current) setLoading(false);
       }
@@ -126,6 +131,9 @@ export default function Profile() {
       });
 
       setProfile(updated.user);
+      if (updated.user) {
+        setCurrentUser(updated.user);
+      }
       setIsEditing(false);
       setSuccessData({
         title: "Profile Updated",
@@ -145,7 +153,7 @@ export default function Profile() {
     } catch {
       // clear local session regardless
     }
-    clearSession();
+    setCurrentUser(null);
     navigate("/login");
   }
 
