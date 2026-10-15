@@ -44,13 +44,21 @@ async function register(req, res) {
   if (String(password).length < 6) {
     return res.status(400).json({ message: "Password must be at least 6 characters." });
   }
+  if (String(password).length > 128) {
+    return res.status(400).json({ message: "Password is too long (max 128 characters)." });
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const normalizedEmail = String(email).toLowerCase().trim();
+  if (normalizedEmail.length > 254 || !emailRegex.test(normalizedEmail)) {
+    return res.status(400).json({ message: "Invalid email format." });
+  }
 
   const phoneRegex = /^[\d\s\-+()]{8,15}$/;
   if (!phoneRegex.test(String(phoneNumber).trim())) {
     return res.status(400).json({ message: "Invalid phone number format." });
   }
 
-  const normalizedEmail = String(email).toLowerCase().trim();
   const existing = await User.findOne({ email: normalizedEmail });
   if (existing) return res.status(409).json({ message: "Email already in use." });
 
@@ -136,13 +144,14 @@ async function forgotPassword(req, res) {
     try {
       await sendResetEmail(user.email, rawToken, user.name);
     } catch (emailErr) {
+      // Logged, but the client still gets the generic reply: an error only for
+      // existing accounts would reveal which emails are registered.
       console.error("[ForgotPassword] Email failed:", emailErr.message);
-      return res.status(500).json({ message: "Failed to send reset email." });
     }
     return res.status(200).json(generic);
   } catch (err) {
     console.error("[ForgotPassword] Error:", err);
-    return res.status(500).json({ message: "Failed to process request." });
+    return res.status(200).json(generic);
   }
 }
 
@@ -157,6 +166,9 @@ async function resetPassword(req, res) {
   }
   if (String(newPassword).length < 6) {
     return res.status(400).json({ message: "Password must be at least 6 characters." });
+  }
+  if (String(newPassword).length > 128) {
+    return res.status(400).json({ message: "Password is too long (max 128 characters)." });
   }
 
   const hashed = authService.hashToken(String(token));

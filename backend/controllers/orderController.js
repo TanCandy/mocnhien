@@ -3,9 +3,10 @@ const mongoose = require("mongoose");
 const { logger } = require("../config/logger");
 const { calculateQuote } = require("../utils/quoteCalculator");
 const Order = require("../models/Order");
-const { parseUSD, formatVND, formatUSD } = require("../services/exchangeRateService");
+const { parseUSD, parseExchangeRate, formatVND, formatUSD } = require("../services/exchangeRateService");
 const { getOrderTotalUSD, getOrderTotalVND, computePaymentFields } = require("../services/orderMath");
 const sheets = require("../services/sheetsSync");
+const { canTransition, VALID_STATUSES } = require("../utils/orderStateMachine");
 
 const syncOrderToGoogleSheets = sheets.syncOrder;
 
@@ -126,7 +127,8 @@ function normaliseContact(raw) {
     if (ct === "none") return { contactType: "none", contactValue: "NO_CONTACT" };
     if (ct === "phone") return { contactType: "phone", contactValue: cv.replace(/[^\d+]/g, "") };
     if (ct === "email") return { contactType: "email", contactValue: cv.toLowerCase().trim() };
-    return { contactType: "email", contactValue: cv.toLowerCase().trim() };
+    // Unknown type: keep it so the caller's VALID_CONTACT_TYPES check rejects it.
+    return { contactType: ct, contactValue: cv };
   }
 
   // Legacy plain email string (string passed instead of object)
@@ -336,9 +338,10 @@ async function createOrder(req, res) {
       return res.status(400).json({ message: "Please fill all required fields." });
     }
 
-    const exchangeRateValue = exchangeRate ? parseFloat(exchangeRate) : 0;
+    const exchangeRateValue = exchangeRate ? parseExchangeRate(exchangeRate) : 0;
     // Exchange rate is only required when a USD price is also provided
-    const parsedPrice = parseFloat(priceUSD) || 0;
+    // parseUSD strips thousands separators ("1,299" → 1299); parseFloat would stop at the comma
+    const parsedPrice = parseUSD(priceUSD);
     if (parsedPrice > 0 && (isNaN(exchangeRateValue) || exchangeRateValue <= 0)) {
       return res.status(400).json({ message: "Exchange rate must be greater than 0 when price USD is provided." });
     }
@@ -353,8 +356,8 @@ async function createOrder(req, res) {
     let priceUSDValue = 0;
     let priceVNDValue = 0;
 
-    if (priceUSD && parseFloat(priceUSD) > 0) {
-      priceUSDValue = parseFloat(priceUSD);
+    if (parsedPrice > 0) {
+      priceUSDValue = parsedPrice;
       if (exchangeRateValue > 0) {
         priceVNDValue = Math.round(priceUSDValue * exchangeRateValue);
       }
@@ -489,7 +492,7 @@ async function adminCreateOrder(req, res) {
 
   // Parse priceUSD and exchangeRate
   const parsedPriceUSD = parseUSD(priceUSD);
-  const parsedExchangeRate = exchangeRate ? parseFloat(exchangeRate) : 0;
+  const parsedExchangeRate = exchangeRate ? parseExchangeRate(exchangeRate) : 0;
 
   // Exchange rate is only required when a USD price is also provided
   if (parsedPriceUSD > 0 && (isNaN(parsedExchangeRate) || parsedExchangeRate <= 0)) {
@@ -606,7 +609,7 @@ async function adminUpdateOrder(req, res) {
 
     // Exchange rate > 0 check
     if (raw.exchangeRate !== undefined) {
-      const rate = parseFloat(raw.exchangeRate);
+      const rate = parseExchangeRate(raw.exchangeRate);
       if (isNaN(rate) || rate <= 0) {
         return res.status(400).json({ message: "Exchange rate must be greater than 0." });
       }
@@ -657,7 +660,7 @@ async function adminUpdateOrder(req, res) {
       updateData.totalUSD = priceUSD;
     }
     if (sentExchangeRate) {
-      updateData.exchangeRate = parseFloat(raw.exchangeRate);
+      updateData.exchangeRate = parseExchangeRate(raw.exchangeRate);
     }
 
     // Clearing the USD price clears the VND price too (no stale fallback).
@@ -668,10 +671,20 @@ async function adminUpdateOrder(req, res) {
       updateData.totalVND = totalVND;
     }
 
-    // Payment fields are recomputed whenever anything they depend on changed;
-    // otherwise they are left alone so an unrelated edit can't clobber a
-    // payment the webhook recorded while the admin had the form open.
-    const normalizedStatus = raw.status ? String(raw.status).toLowerCase() : currentOrder.status;
+    // ── 4b. Order State Machine Transition Validation ────────────────────
+    if (raw.status !== undefined) {
+      const targetStatus = String(raw.status).toLowerCase().trim();
+      if (!VALID_STATUSES.includes(targetStatus)) {
+        return res.status(400).json({ message: "Invalid status value." });
+      }
+      if (!canTransition(currentOrder.status, targetStatus)) {
+        return res.status(400).json({
+          message: `Cannot transition order status from '${currentOrder.status}' to '${targetStatus}'.`,
+        });
+      }
+    }
+
+    const normalizedStatus = raw.status ? String(raw.status).toLowerCase().trim() : currentOrder.status;
     const paymentInputSent =
       raw.paidAmount !== undefined || raw.paymentPercent !== undefined || raw.paymentStatus !== undefined;
     const totalChanged = totalVND !== getOrderTotalVND(currentOrder);
@@ -793,6 +806,7 @@ async function approveOrder(req, res) {
       message: "Order approved successfully.",
     });
   } catch (err) {
+    if (isClientDbError(err)) return res.status(400).json({ message: "Invalid order id." });
     logger.error({ err: err.message }, "[ApproveOrder] failed");
     return res.status(500).json({ message: "Failed to approve order." });
   }
@@ -835,6 +849,7 @@ async function recalculateVND(req, res) {
       message: "VND price recalculated successfully.",
     });
   } catch (err) {
+    if (isClientDbError(err)) return res.status(400).json({ message: "Invalid order id." });
     logger.error({ err: err.message }, "[RecalculateVND] failed");
     return res.status(500).json({ message: "Failed to recalculate VND." });
   }
@@ -916,18 +931,29 @@ async function trackOrder(req, res) {
     return res.status(400).json({ message: "Tracking code is required." });
   }
 
-  // Build query - admin can find any order, users only see their own
-  const query = {
-    $or: [
-      { orderCode: String(searchCode).trim() },
-      { tracking_code: String(searchCode).trim() },
-      { trackingId: String(searchCode).trim() },
-    ]
-  };
+  const trimmed = String(searchCode).trim();
+  const or = [
+    { orderCode: trimmed },
+    { tracking_code: trimmed },
+    { trackingId: trimmed },
+  ];
+  if (mongoose.isValidObjectId(trimmed)) {
+    or.push({ _id: trimmed });
+  }
 
-  // Non-admin users must match their userEmail (order isolation)
+  // Build query - admin can find any order, users only see their own
+  const query = { $or: or };
+
+  // Non-admin users must match their userEmail or user ID (order isolation)
   if (!isAdmin) {
-    query.$and = [{ userEmail: userEmail }];
+    query.$and = [
+      {
+        $or: [
+          { userEmail: userEmail },
+          { user: req.user._id },
+        ],
+      },
+    ];
   }
 
   const order = await Order.findOne(query).lean();
@@ -1007,6 +1033,13 @@ async function deleteOrder(req, res) {
 
     // Sheet errors are logged inside and never block DB deletion
     await sheets.deleteOrderRow(order);
+
+    // Unlink any payments associated with this order so they are not orphaned
+    const Payment = require("../models/Payment");
+    await Payment.updateMany(
+      { order: order._id },
+      { $set: { status: "unmatched", order: null, orderCode: null } }
+    );
 
     // Delete from database
     await Order.findByIdAndDelete(id);

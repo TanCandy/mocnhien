@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { SessionUser, clearSession, getSessionUser, setSessionUser as saveSessionUser } from "../lib/auth";
+import { SessionUser, clearSession, getSessionUser, getToken, setSessionUser as saveSessionUser } from "../lib/auth";
 import { api } from "../lib/api";
 
 interface UserContextType {
@@ -55,6 +55,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
     const storedUser = getSessionUser();
     if (storedUser) {
       setUser(storedUser);
+    }
+    // No token → anonymous visitor; skip the profile call (it would only 401).
+    if (!getToken()) {
+      setLoading(false);
+      return;
     }
     refreshUser().finally(() => setLoading(false));
   }, []);

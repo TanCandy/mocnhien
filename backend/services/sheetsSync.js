@@ -21,6 +21,15 @@ const TIME_ZONE = "Asia/Ho_Chi_Minh";
 const REQUEST_TIMEOUT_MS = 10_000;
 const BULK_TIMEOUT_MS = 60_000;
 
+/** Sanitize values to prevent Google Sheets / Excel Formula Injection (=, +, -, @, \t, \r) */
+function sanitizeCellString(val) {
+  if (typeof val !== "string") return val;
+  if (/^[=+\-@\t\r]/.test(val)) {
+    return `'${val}`;
+  }
+  return val;
+}
+
 /** Flat, sheet/Excel-friendly representation of an order. */
 function orderToRow(order) {
   const total = getOrderTotalVND(order);
@@ -33,13 +42,13 @@ function orderToRow(order) {
     date: createdAt ? createdAt.toLocaleDateString("vi-VN", { timeZone: TIME_ZONE }) : "",
     orderCode: order.orderCode || "",
     orderId: order._id ? String(order._id) : "",
-    staffName: order.staffName ?? "",
-    productName: order.productName || order.product_name || "",
-    productLink: order.productLink || "",
-    warehouse: order.warehouseAddress || "",
-    customerName: order.customerName || "",
+    staffName: sanitizeCellString(order.staffName ?? ""),
+    productName: sanitizeCellString(order.productName || order.product_name || ""),
+    productLink: sanitizeCellString(order.productLink || ""),
+    warehouse: sanitizeCellString(order.warehouseAddress || ""),
+    customerName: sanitizeCellString(order.customerName || ""),
     contactType: order.contactType || "",
-    contactValue: order.contactValue === "NO_CONTACT" ? "" : order.contactValue || "",
+    contactValue: sanitizeCellString(order.contactValue === "NO_CONTACT" ? "" : order.contactValue || ""),
     usd: getOrderTotalUSD(order),
     exchangeRate: order.exchangeRate ?? 0,
     vnd: total,
@@ -47,7 +56,7 @@ function orderToRow(order) {
     paymentPercentage: payment.paymentPercent,
     remainingAmount: payment.remainingAmount,
     status: order.status || "",
-    trackingNumber: order.uspsTracking || "",
+    trackingNumber: sanitizeCellString(order.uspsTracking || ""),
     createdAt: createdAt ? createdAt.toISOString() : "",
     updatedAt: order.updatedAt ? new Date(order.updatedAt).toISOString() : "",
     // Added after the original keys so positional (legacy) receivers keep working.

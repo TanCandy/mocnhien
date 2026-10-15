@@ -1,7 +1,9 @@
 const User = require("../models/User");
 
 async function getMe(req, res) {
-  const user = await User.findById(req.user._id).select("_id name email createdAt").lean();
+  const user = await User.findById(req.user._id)
+    .select("_id name email role phoneNumber primaryAddress createdAt updatedAt")
+    .lean();
   return res.status(200).json({ user });
 }
 
@@ -18,7 +20,9 @@ async function patchMe(req, res) {
   const user = await User.findByIdAndUpdate(req.user._id, updates, {
     new: true,
     runValidators: true,
-  }).select("_id name email createdAt");
+  })
+    .select("_id name email role phoneNumber primaryAddress createdAt updatedAt")
+    .lean();
 
   return res.status(200).json({ user });
 }

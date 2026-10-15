@@ -30,8 +30,9 @@ jobs:
       - name: Audit (root)
         run: npm audit --audit-level=high
 
+      # Production deps only: nodemon (dev) pulls in braces, which has no patched release yet.
       - name: Audit (backend)
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
         working-directory: backend
 
       - name: Test (frontend)

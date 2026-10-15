@@ -101,9 +101,20 @@ async function sepayWebhook(req, res) {
 // ============================================
 async function getOrderPaymentInfo(req, res) {
   const { id } = req.params;
-  const order = mongoose.Types.ObjectId.isValid(id)
-    ? await Order.findById(id).lean()
-    : await Order.findOne({ orderCode: String(id).trim() }).lean();
+  const trimmed = String(id || "").trim();
+  let order = null;
+  if (mongoose.Types.ObjectId.isValid(trimmed)) {
+    order = await Order.findById(trimmed).lean();
+  }
+  if (!order) {
+    order = await Order.findOne({
+      $or: [
+        { orderCode: trimmed },
+        { tracking_code: trimmed },
+        { trackingId: trimmed },
+      ],
+    }).lean();
+  }
   if (!order) return res.status(404).json({ message: "Order not found." });
 
   const isAdmin = req.user.role === "admin";

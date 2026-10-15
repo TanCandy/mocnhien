@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, X, Maximize2, Loader2, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -89,10 +89,19 @@ export default function PaymentQR({ orderId, onPaid }: PaymentQRProps) {
     return () => clearInterval(timer);
   }, [awaiting, load]);
 
+  const onPaidRef = useRef(onPaid);
+  useEffect(() => {
+    onPaidRef.current = onPaid;
+  }, [onPaid]);
+
+  const hasNotifiedPaid = useRef(false);
   const isPaid = info?.state === "paid";
   useEffect(() => {
-    if (isPaid) onPaid?.();
-  }, [isPaid, onPaid]);
+    if (isPaid && !hasNotifiedPaid.current) {
+      hasNotifiedPaid.current = true;
+      onPaidRef.current?.();
+    }
+  }, [isPaid]);
 
   const header = isPaid ? "Đã Thanh Toán" : "Thanh Toán Qua Ngân Hàng";
 

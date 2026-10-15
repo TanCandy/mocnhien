@@ -119,6 +119,15 @@ describe("POST /api/auth/forgot-password", () => {
     expect(res.status).toBe(200);
     expect(res.body.message).toMatch(/if an account with that email exists/i);
   });
+
+  it("answers an existing email exactly like an unknown one, even when the email provider fails", async () => {
+    // No RESEND_API_KEY in tests → sending throws. A 500 here would reveal
+    // that the account exists (unknown emails get 200).
+    const unknown = await request(app).post("/api/auth/forgot-password").send({ email: "nobody-here@test.com" });
+    const known = await request(app).post("/api/auth/forgot-password").send({ email: "login-test@test.com" });
+    expect(known.status).toBe(unknown.status);
+    expect(known.body).toEqual(unknown.body);
+  });
 });
 
 describe("POST /api/auth/reset-password", () => {

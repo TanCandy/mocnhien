@@ -255,3 +255,40 @@ local certificate there, so the browser shows a warning you can click through.
 | Login works but you're logged out immediately | The site isn't being opened over `https://`, or `CLIENT_URL`/`ALLOWED_ORIGINS` don't match the domain. |
 | Payment never confirms | **Admin → Payments**: is the transfer listed as Unmatched? If nothing arrives, check the SePay webhook log and `docker compose logs app \| grep -i sepay`. |
 | `mongo` exits with `illegal instruction` | The CPU lacks AVX. See prerequisites. |
+
+---
+
+## Render (free tier) + MongoDB Atlas
+
+No server to manage: [`render.yaml`](render.yaml) builds the same Dockerfile on Render, and the
+database lives on a free Atlas M0 cluster.
+
+**Trade-off:** a free Render service sleeps after 15 minutes without requests and takes ~30–60 s to
+wake. A SePay webhook that lands while it sleeps can time out — check **Admin → Payments → Unmatched**
+for those, or keep it awake by pointing a free uptime monitor (e.g. UptimeRobot) at `/health`
+every 5–10 minutes. One service awake all month uses ~744 of the 750 free hours. Render's paid
+Starter instance never sleeps.
+
+1. **Atlas** → Database Access: create (or rotate) the app user's password. Network Access: allow
+   `0.0.0.0/0` (Render's free outbound IPs aren't fixed). Copy the `mongodb+srv://…` URI; URL-encode
+   special characters in the password (`@` → `%40`).
+2. **Render** → New → Blueprint → connect the GitHub repo → pick the branch to deploy from.
+   `JWT_SECRET` is generated for you. Fill in the rest when asked:
+   - `MONGODB_URI` — the Atlas URI from step 1
+   - `FRONTEND_BASE_URL`, `CLIENT_URL`, `ALLOWED_ORIGINS` — the service URL, e.g.
+     `https://mocnhien.onrender.com` (shown once the service is created; edit them under
+     Environment if the name was taken and Render picked another)
+   - `PAYMENT_*` — the bank account shown on QR codes (see `.env.production.example`)
+   - SePay / Resend / Google Sheet / Sentry keys — leave empty to keep those features off
+3. Wait for the deploy to go **Live**, then open `https://<service>.onrender.com/health`.
+4. **First admin** — the free plan has no shell, so run the script from your own machine against
+   the same Atlas database:
+
+   ```bash
+   cd backend
+   MONGODB_URI="mongodb+srv://…" node scripts/create-admin.js --email you@example.com --name "Your Name"
+   ```
+
+5. **SePay** webhook URL: `https://<service>.onrender.com/api/payments/webhook/sepay` (see section 5).
+
+Every push to the chosen branch redeploys automatically.

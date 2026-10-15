@@ -45,7 +45,7 @@ export function isValidExchangeRate(rate: number | string | null | undefined): b
  */
 export function parseExchangeRate(rate: number | string | null | undefined): number {
   if (rate === null || rate === undefined || rate === "") return 0;
-  if (typeof rate === "number") return rate;
+  if (typeof rate === "number") return rate < 0 || isNaN(rate) ? 0 : Math.min(10000000, rate);
   const parsed = parseFloat(String(rate).replace(/,/g, "").trim());
-  return isNaN(parsed) ? 0 : parsed;
+  return isNaN(parsed) || parsed < 0 ? 0 : Math.min(10000000, parsed);
 }

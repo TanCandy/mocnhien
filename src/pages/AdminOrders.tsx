@@ -7,6 +7,7 @@ import { formatCurrencyInput, formatVND, formatUSD, parseUSD, ensureUrlProtocol 
 import { calculateVND, parseExchangeRate, formatExchangeRate } from "../lib/exchangeRate";
 import { getWarehouseAddress, computeOrderVND, getMongoOrderId, resolveContactDisplay } from "../lib/orderUtils";
 import { PRODUCT_TYPES, normalizeProductType, isKnownProductType } from "../lib/productTypes";
+import { canTransition } from "../lib/orderStateMachine";
 
 // ─── Contact helpers ─────────────────────────────────────────────────────────
 
@@ -447,6 +448,15 @@ export default function AdminOrders() {
     setFormError("");
   }
 
+  useEffect(() => {
+    if (!showModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeModal();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showModal]);
+
   function handlePriceUSDChange(value: string) {
     const formatted = formatCurrencyInput(value);
     setFormData({ ...formData, priceUSD: formatted });
@@ -583,9 +593,9 @@ export default function AdminOrders() {
           formData.contactType === "none" ? "NO_CONTACT" : formData.contactValue.trim(),
 
         // Pricing — the server derives VND, paid % and remaining amount
-        priceUSD: formData.priceUSD,
-        total_price: formData.total_price ? parseFloat(formData.total_price) : undefined,
-        exchangeRate: formData.exchangeRate ? parseFloat(formData.exchangeRate) : undefined,
+        priceUSD: formData.priceUSD ? parseUSD(formData.priceUSD) : undefined,
+        total_price: formData.total_price ? parseUSD(formData.total_price) : undefined,
+        exchangeRate: formData.exchangeRate ? parseExchangeRate(formData.exchangeRate) : undefined,
 
         // Status (admin only)
         sold_by: formData.sold_by || undefined,
@@ -678,9 +688,9 @@ export default function AdminOrders() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-8 pb-20 space-y-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-8 pb-20 space-y-8 overflow-x-hidden">
       <div className="flex justify-between items-center pt-10">
-        <h1 className="text-4xl font-headline text-primary">Manage Orders</h1>
+        <h1 className="text-3xl sm:text-4xl font-headline text-primary">Manage Orders</h1>
         <button
           onClick={openCreateModal}
           className="bg-primary text-on-primary px-6 py-3 rounded-full font-bold flex items-center gap-2 hover:bg-primary/90 transition-all shadow-lg"
@@ -736,7 +746,7 @@ export default function AdminOrders() {
             onChange={(e) => setExportFilters((f) => ({ ...f, to: e.target.value }))}
           />
         </div>
-        <div className="flex gap-2 ml-auto">
+        <div className="flex flex-wrap gap-2 sm:ml-auto">
           <button
             type="button"
             onClick={handleExport}
@@ -1137,10 +1147,10 @@ export default function AdminOrders() {
                       setFormData((prev) => ({ ...prev, status: newStatus }));
                     }}
                   >
-                    <option value="pending">Pending</option>
-                    <option value="approved">Approved</option>
-                    <option value="shipping">Shipping</option>
-                    <option value="delivered">Delivered</option>
+                    <option value="pending" disabled={Boolean(editingOrder && !canTransition(editingOrder.status, "pending"))}>Pending</option>
+                    <option value="approved" disabled={Boolean(editingOrder && !canTransition(editingOrder.status, "approved"))}>Approved</option>
+                    <option value="shipping" disabled={Boolean(editingOrder && !canTransition(editingOrder.status, "shipping"))}>Shipping</option>
+                    <option value="delivered" disabled={Boolean(editingOrder && !canTransition(editingOrder.status, "delivered"))}>Delivered</option>
                   </select>
                 </div>
               </div>

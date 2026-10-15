@@ -128,7 +128,7 @@ export default function ScrollableTable({ children, minWidth = 0, className = ""
       </div>
 
       {/* Bottom (real) scroll container */}
-      <div ref={bodyRef} className="table-scroll-body" onScroll={onBodyScroll}>
+      <div ref={bodyRef} className="table-scroll-body overflow-x-auto" onScroll={onBodyScroll}>
         <div style={{ minWidth: `${minWidth}px` }}>{children}</div>
       </div>
     </div>

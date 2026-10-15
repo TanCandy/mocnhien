@@ -38,12 +38,12 @@ export function formatCurrencyInput(value: string): string {
  * @returns {number} Parsed number
  */
 export function parseUSD(value: string | number): number {
-  if (typeof value === "number") return value;
+  if (typeof value === "number") return value < 0 || isNaN(value) ? 0 : value;
   if (!value) return 0;
   // Remove all commas and convert to number
   const cleaned = String(value).replace(/,/g, "").trim();
   const parsed = parseFloat(cleaned);
-  return isNaN(parsed) ? 0 : parsed;
+  return isNaN(parsed) || parsed < 0 ? 0 : parsed;
 }
 
 /**
@@ -114,6 +114,8 @@ export function isValidUrl(url: string): boolean {
  */
 export function ensureUrlProtocol(url: string): string {
   if (!url) return "";
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return "https://" + url;
+  const trimmed = url.trim();
+  if (/^(javascript|data|vbscript):/i.test(trimmed)) return "#";
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+  return "https://" + trimmed;
 }
